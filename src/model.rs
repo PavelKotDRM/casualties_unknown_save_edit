@@ -97,6 +97,7 @@ pub struct PhysicalLoad {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ContainerSpace {
     pub capacity: f32,
+    pub used: f32,
     pub remaining: f32,
     pub over_capacity: f32,
     pub complete: bool,
@@ -224,6 +225,7 @@ pub fn container_space(
     let over_capacity = (used - capacity).max(0.0);
     Some(ContainerSpace {
         capacity,
+        used,
         remaining,
         over_capacity,
         complete,
@@ -635,10 +637,16 @@ mod tests {
             wear_slot: None,
             armor: None,
             insulation: None,
+            item_tags: Default::default(),
             container_capacity: None,
             container_max_item_weight: None,
             container_encumbrance,
+            container_tag_restriction: None,
             liquid_capacity: None,
+            only_hold_in_hands: false,
+            wearable_can_be_held: false,
+            desired_wear_limb: None,
+            destroy_at_zero_condition: false,
         }
     }
 
@@ -694,6 +702,7 @@ mod tests {
         ]);
 
         let space = container_space(&data, 0, &stats).unwrap();
+        assert_eq!(space.used, 5.0);
         assert_eq!(space.remaining, 3.0);
         assert_eq!(space.over_capacity, 0.0);
         assert!(space.complete);

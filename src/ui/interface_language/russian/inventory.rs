@@ -3,6 +3,11 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "The first item of a location is held / worn; the following ones are stored inside it." => {
             Some("Первый предмет в ячейке удерживается или надет; остальные хранятся внутри него.")
         }
+        "The first item in this slot is its holder; any following items are stored inside it." => {
+            Some(
+                "Первый предмет в этом слоте удерживается персонажем; остальные хранятся внутри него.",
+            )
+        }
         "No saved component state (the game uses the item's defaults)." => {
             Some("Сохранённое состояние компонента отсутствует (используются значения игры).")
         }
@@ -14,7 +19,22 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Add item…" => Some("Добавить предмет…"),
         "Add item" => Some("Добавить предмет"),
         "Location" => Some("Расположение"),
-        "Inventory slot" => Some("Ячейка инвентаря"),
+        "Unknown slot {index}" => Some("Неизвестный слот {index}"),
+        "Mouth" => Some("Рот"),
+        "Upper back" => Some("Верх спины"),
+        "Middle back" => Some("Середина спины"),
+        "Lower back" => Some("Низ спины"),
+        "Item cannot be worn here" => Some("Предмет нельзя надеть сюда"),
+        "Can only be held in hands" => Some("Можно держать только в руках"),
+        "Clothing can't be held; wear it or store it in a container" => {
+            Some("Экипировку нельзя держать; наденьте её или уберите в контейнер")
+        }
+        "⚠ The game doesn't let clothing be held; wear it or store it in a container." => {
+            Some("⚠ Игра не позволяет держать экипировку; наденьте её или уберите в контейнер.")
+        }
+        "⚠ The game only lets this item be held in hands; move it to a hand slot." => {
+            Some("⚠ Игра позволяет держать этот предмет только в руках; переместите его в руку.")
+        }
         "Worn" => Some("Надето"),
         "Unassigned (slot -1, no wear slot)" => Some("Не назначено (нет слота одежды)"),
         "Select an item to edit it." => Some("Выберите предмет для редактирования."),
@@ -23,6 +43,24 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Favourited" => Some("Избранное"),
         "Label" => Some("Метка"),
         "Swatch" => Some("Вариант цвета"),
+        "Colour variant index" => Some("Номер варианта цвета"),
+        "Cannot be worn: {limb} is dismembered" => {
+            Some("Нельзя надеть: {limb} — конечность отсечена")
+        }
+        "A container with items can't be stored in another container" => {
+            Some("Контейнер с предметами нельзя положить в другой контейнер")
+        }
+        "⚠ {limb} is dismembered: the game won't wear this item and drops it on load." => Some(
+            "⚠ {limb} — конечность отсечена: игра не наденет предмет и бросит его при загрузке.",
+        ),
+        "⚠ The game has no such slot: loading fails for this item and shifts the saved component data of later items." => {
+            Some(
+                "⚠ В игре нет такого слота: предмет не загрузится, а данные компонентов следующих предметов сместятся.",
+            )
+        }
+        "⚠ Condition 0: the game destroys this item (a container spills its contents)." => {
+            Some("⚠ Состояние 0: игра уничтожит предмет (содержимое контейнера высыплется).")
+        }
         "Components" => Some("Компоненты"),
         "Weight" => Some("Вес"),
         "Weight:" => Some("Вес:"),
@@ -71,12 +109,44 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "All categories" => Some("Все категории"),
         "Nothing found." => Some("Ничего не найдено."),
         "Put into" => Some("Поместить в"),
-        "The location is occupied: the item will be stored inside the held / worn item." => {
-            Some("Ячейка занята: предмет будет помещён внутрь удерживаемого или надетого предмета.")
+        "New item will be held/worn" => Some("Новый предмет будет в руках или надет."),
+        "Current location" => Some("Текущее расположение"),
+        "Empty location" => Some("Свободное расположение"),
+        "Item data unavailable" => Some("Данные предмета недоступны."),
+        "Container data unavailable" => Some("Данные контейнера недоступны."),
+        "Inside {item}: capacity unavailable" => Some("Внутри «{item}»: вместимость неизвестна"),
+        "Inside {item}: weight limits unavailable" => {
+            Some("Внутри «{item}»: ограничения веса неизвестны")
         }
-        "The location is empty: the item will be held / worn." => {
-            Some("Ячейка свободна: предмет будет удерживаться или надет.")
+        "Cannot verify item weight for {item}" => {
+            Some("Невозможно проверить вес предмета для «{item}»")
         }
+        "Item exceeds max weight per item for {item}" => {
+            Some("Вес предмета превышает лимит контейнера «{item}»")
+        }
+        "Not enough remaining capacity in {item}" => {
+            Some("В контейнере «{item}» недостаточно свободного места")
+        }
+        "Inside {item}: restrictions unavailable" => {
+            Some("Внутри «{item}»: ограничения неизвестны")
+        }
+        "Cannot check item type for {item}" => {
+            Some("Невозможно проверить тип предмета для «{item}»")
+        }
+        "Item type not accepted by {item}" => {
+            Some("Контейнер «{item}» не принимает этот тип предмета")
+        }
+        "Inside {item}: full" => Some("Внутри «{item}»: места нет"),
+        "Inside {item}: over capacity" => Some("Внутри «{item}»: превышена вместимость"),
+        "Inside {item}: {remaining}/{capacity} u left" => {
+            Some("Внутри «{item}»: осталось {remaining}/{capacity} u")
+        }
+        "Occupied by {item} (not a container)" => Some("Занято предметом «{item}» (не контейнер)"),
+        "Container data unavailable for {item}" => Some("Данные контейнера «{item}» недоступны"),
+        "Space left: {weight} u" => Some("Свободно: {weight} u"),
+        "Full" => Some("Места нет"),
+        "Over capacity by {weight} u" => Some("Превышена вместимость на {weight} u"),
+        "Container capacity unavailable" => Some("Вместимость контейнера недоступна"),
         "Add" => Some("Добавить"),
         "Close" => Some("Закрыть"),
         "Tree" => Some("Дерево"),

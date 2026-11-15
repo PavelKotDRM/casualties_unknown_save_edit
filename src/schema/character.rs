@@ -1,6 +1,52 @@
 /// Names of the playable characters (`character` field).
 pub const CHARACTERS: &[&str] = &["Experiment", "Character #1", "Character #2"];
 
+/// A body slot that holds an item (`items[].slot >= 0`).
+#[derive(Debug, Clone, Copy)]
+pub struct HoldSlotDef {
+    /// English fallback name.
+    pub name: &'static str,
+    /// Locale key of the name in the `other` table.
+    pub locale_key: &'static str,
+    /// Icon shown before the name.
+    pub icon: &'static str,
+}
+
+/// The player's hold slots in `Body.slots` order, read from the game's body
+/// prefab; labels match the inventory HUD.
+pub const HOLD_SLOTS: [HoldSlotDef; 6] = [
+    HoldSlotDef {
+        name: "Right hand",
+        locale_key: "HandF",
+        icon: "✋",
+    },
+    HoldSlotDef {
+        name: "Left hand",
+        locale_key: "HandB",
+        icon: "🤚",
+    },
+    HoldSlotDef {
+        name: "Mouth",
+        locale_key: "mouth",
+        icon: "👄",
+    },
+    HoldSlotDef {
+        name: "Upper back",
+        locale_key: "upperback",
+        icon: "🎒",
+    },
+    HoldSlotDef {
+        name: "Middle back",
+        locale_key: "middleback",
+        icon: "🎒",
+    },
+    HoldSlotDef {
+        name: "Lower back",
+        locale_key: "lowerback",
+        icon: "🎒",
+    },
+];
+
 /// The three skills stored in `body.skills`.
 #[derive(Debug, Clone, Copy)]
 pub struct SkillDef {

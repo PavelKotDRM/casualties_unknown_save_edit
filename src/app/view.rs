@@ -1,6 +1,7 @@
 //! Application menus and windows.
 
 use super::*;
+use crate::schema;
 
 impl EditorApp {
     pub(super) fn menu_bar(&mut self, ui: &mut Ui) {
@@ -10,6 +11,14 @@ impl EditorApp {
             InterfaceLanguage::from_code(Some(&self.config.interface_language), pack.as_deref());
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(language.text("File").to_string(), |ui| {
+                if ui
+                    .button(format!("🆕 {}", language.text("New save…")))
+                    .clicked()
+                {
+                    self.request(Pending::NewSave);
+                    ui.close();
+                }
+                ui.separator();
                 if ui
                     .button(format!("📂 {}", language.text("Open game save")))
                     .clicked()
@@ -447,6 +456,10 @@ impl EditorApp {
                 self.open_dialog();
             }
             ui.add_space(6.0);
+            if ui.button(format!("🆕 {}", language.text("Create new save…"))).clicked() {
+                self.request(Pending::NewSave);
+            }
+            ui.add_space(6.0);
             ui.weak(language.text("A timestamped backup is created in SaveEditorBackups every time a save is opened.").to_string());
         });
     }
@@ -571,6 +584,144 @@ impl EditorApp {
                     ui.label(language.text("Item, limb and setting names are read from the game's own language files.").to_string());
                     ui.label(language.text("Built with egui.").to_string());
                 });
+        }
+
+        if let Some(mut wizard) = self.new_save_wizard.take() {
+            let mut open = true;
+            let mut cancel = false;
+            let mut create = false;
+            let mut can_create = false;
+            let mut next = false;
+            let mut back = false;
+            let names = Names {
+                locale: self.locale.as_ref(),
+                interface_language: language,
+            };
+            egui::Window::new(format!("🆕 {}", language.text("Create new save")))
+                .open(&mut open)
+                .default_size([760.0, 680.0])
+                .min_width(540.0)
+                .show(ctx, |ui| {
+                    ui.heading(match wizard.step {
+                        NewSaveStep::World => language.text("World settings"),
+                        NewSaveStep::Character => language.text("Character"),
+                    });
+                    match wizard.step {
+                        NewSaveStep::World => {
+                            ui.label(
+                                language
+                                    .text("Choose a built-in game preset or customize every world setting.")
+                                    .to_string(),
+                            );
+                            ui.horizontal(|ui| {
+                                ui.label(language.text("World preset:").to_string());
+                                let current_name = schema::RUN_PRESETS
+                                    .iter()
+                                    .find(|preset| preset.id == wizard.preset)
+                                    .map_or_else(
+                                        || language.text("Custom").into_owned(),
+                                        |preset| language.text(preset.name).into_owned(),
+                                    );
+                                let previous = wizard.preset.clone();
+                                egui::ComboBox::from_id_salt("new_save_preset")
+                                    .selected_text(current_name)
+                                    .show_ui(ui, |ui| {
+                                        for preset in schema::RUN_PRESETS {
+                                            ui.selectable_value(
+                                                &mut wizard.preset,
+                                                preset.id.to_owned(),
+                                                language.text(preset.name),
+                                            );
+                                        }
+                                        ui.selectable_value(
+                                            &mut wizard.preset,
+                                            "custom".to_owned(),
+                                            language.text("Custom"),
+                                        );
+                                    });
+                                if wizard.preset != previous
+                                    && let Some(settings) =
+                                        schema::run_settings_for_preset(&wizard.preset)
+                                {
+                                    wizard.data["runSettings"] = Value::Array(settings);
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(language.text("Starting layer:").to_string());
+                                let current = wizard.data["biome"].as_i64().unwrap_or(0);
+                                let mut selected = current;
+                                egui::ComboBox::from_id_salt("new_save_layer")
+                                    .selected_text(names.layer(selected))
+                                    .show_ui(ui, |ui| {
+                                        for (index, _) in schema::LAYERS.iter().enumerate() {
+                                            let index = index as i64;
+                                            ui.selectable_value(
+                                                &mut selected,
+                                                index,
+                                                names.layer(index),
+                                            );
+                                        }
+                                    });
+                                if selected != current {
+                                    wizard.data["biome"] = Value::from(selected);
+                                }
+                            });
+                            ui.separator();
+                            let settings_changed = wizard.data["runSettings"]
+                                .as_array_mut()
+                                .is_some_and(|settings| {
+                                    ui.push_id("new_save_run_settings", |ui| {
+                                        ui::run::run_settings_editor(ui, settings, names)
+                                    })
+                                    .inner
+                                });
+                            if settings_changed {
+                                wizard.preset = "custom".to_owned();
+                            }
+                            next = true;
+                        }
+                        NewSaveStep::Character => {
+                            ui.label(
+                                language
+                                    .text("Choose the character after setting up the world.")
+                                    .to_string(),
+                            );
+                            ui.push_id("new_save_character", |ui| {
+                                ui::character::show(ui, &mut wizard.data, names);
+                            });
+                            back = true;
+                            can_create = true;
+                        }
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button(language.text("Cancel")).clicked() {
+                            cancel = true;
+                        }
+                        if back && ui.button(language.text("Back")).clicked() {
+                            wizard.step = NewSaveStep::World;
+                        }
+                        if next && ui.button(language.text("Next")).clicked() {
+                            wizard.step = NewSaveStep::Character;
+                        }
+                        if can_create
+                            && ui
+                                .button(format!("💾 {}", language.text("Create save…")))
+                                .clicked()
+                        {
+                            create = true;
+                        }
+                    });
+                });
+            if cancel {
+                open = false;
+            }
+            if create && open && self.create_new_save(wizard.data.clone()) {
+                open = false;
+            }
+            if open {
+                self.new_save_wizard = Some(wizard);
+            }
         }
     }
 

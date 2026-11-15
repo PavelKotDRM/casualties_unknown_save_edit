@@ -46,6 +46,26 @@ fn item_and_container_metadata_is_loaded() {
         bag.container_encumbrance
             .is_some_and(|value| value.is_finite() && value >= 0.0)
     );
+    let restricted_container = stats
+        .values()
+        .find(|item| {
+            item.container_tag_restriction
+                .as_ref()
+                .is_some_and(|tags| !tags.is_empty())
+        })
+        .expect("no tag-restricted container was loaded");
+    assert!(
+        stats
+            .values()
+            .any(|item| { restricted_container.accepts_item(item) == Some(true) }),
+        "no item matched the container's tag restrictions"
+    );
+    assert!(
+        stats
+            .values()
+            .any(|item| { restricted_container.accepts_item(item) == Some(false) }),
+        "container tag restrictions did not reject any item"
+    );
     for id in ["waterbottle", "chocolatemilk", "combatpen", "liquidpouch"] {
         let item = stats
             .get(id)
@@ -53,4 +73,17 @@ fn item_and_container_metadata_is_loaded() {
         assert!(item.liquid_capacity.is_some_and(|capacity| capacity > 0.0));
         assert!(item.weight > 0.0);
     }
+    let toolbox = stats.get("toolbox").expect("missing toolbox");
+    assert!(toolbox.only_hold_in_hands && toolbox.container_capacity.is_some());
+    assert!(!bag.only_hold_in_hands);
+    assert!(stats["autopump"].wearable && stats["autopump"].wearable_can_be_held);
+    assert!(!stats["bigpack"].wearable_can_be_held);
+    assert!(
+        stats
+            .values()
+            .filter(|item| item.wearable)
+            .all(|item| item.desired_wear_limb.is_some()),
+        "every wearable should name the limb it is worn on"
+    );
+    assert!(stats.values().any(|item| item.destroy_at_zero_condition));
 }

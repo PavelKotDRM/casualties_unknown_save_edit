@@ -73,11 +73,24 @@ impl Tab {
 /// Actions that would discard unsaved changes and need confirmation.
 #[derive(Debug, Clone)]
 enum Pending {
+    NewSave,
     Open(PathBuf),
     OpenDialog,
     Reload,
     RestoreBackup(PathBuf),
     Close,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewSaveStep {
+    World,
+    Character,
+}
+
+struct NewSaveWizard {
+    data: Value,
+    step: NewSaveStep,
+    preset: String,
 }
 
 /// Severity of a status-bar message.
@@ -191,6 +204,7 @@ pub struct EditorApp {
     backups: Vec<BackupInfo>,
     about_open: bool,
     pending: Option<Pending>,
+    new_save_wizard: Option<NewSaveWizard>,
     allow_close: bool,
     title: String,
     ctx: egui::Context,
@@ -225,6 +239,7 @@ impl EditorApp {
             backups: Vec::new(),
             about_open: false,
             pending: None,
+            new_save_wizard: None,
             allow_close: false,
             title: String::new(),
             ctx: cc.egui_ctx.clone(),
@@ -430,6 +445,13 @@ impl EditorApp {
 
     fn perform(&mut self, action: Pending) {
         match action {
+            Pending::NewSave => {
+                self.new_save_wizard = Some(NewSaveWizard {
+                    data: save::new_game_data(),
+                    step: NewSaveStep::World,
+                    preset: "normal".to_owned(),
+                });
+            }
             Pending::Open(path) => self.open(&path),
             Pending::OpenDialog => self.open_dialog(),
             Pending::Reload => {
@@ -537,6 +559,7 @@ impl EditorApp {
         if let Some(dir) = self.current_dir() {
             dialog = dialog.set_directory(dir);
         }
+
         let Some(path) = dialog.save_file() else {
             return;
         };
@@ -555,6 +578,48 @@ impl EditorApp {
                 self.set_status(format!("Saved as {}", path.display()), Level::Success);
             }
             Err(e) => self.error("Save failed", e),
+        }
+    }
+
+    fn create_new_save(&mut self, data: Value) -> bool {
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Create new save")
+            .set_file_name(save::SAVE_FILE_NAME)
+            .add_filter("Game save (gzip)", &["sv"])
+            .add_filter("Plain JSON", &["json"]);
+        if let Some(dir) = self.current_dir() {
+            dialog = dialog.set_directory(dir);
+        }
+        let Some(path) = dialog.save_file() else {
+            return false;
+        };
+        let format = if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        {
+            SaveFormat::PlainJson
+        } else {
+            SaveFormat::Gzip
+        };
+        let mut file = SaveFile {
+            path: path.clone(),
+            format,
+            data,
+            disk_bytes: Vec::new(),
+        };
+        match file.write() {
+            Ok(backup) => {
+                self.last_backup = backup;
+                self.save = Some(file);
+                self.reset_history();
+                self.tab = Tab::Overview;
+                self.set_status(format!("Created {}", path.display()), Level::Success);
+                true
+            }
+            Err(error) => {
+                self.error("Could not create save", error);
+                false
+            }
         }
     }
 

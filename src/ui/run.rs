@@ -321,6 +321,11 @@ fn run_settings(ui: &mut Ui, settings: &mut [Value], names: Names) -> bool {
     changed
 }
 
+/// Shows the game's run-setting controls for a new-save wizard.
+pub fn run_settings_editor(ui: &mut Ui, settings: &mut [Value], names: Names) -> bool {
+    run_settings(ui, settings, names)
+}
+
 /// Line chart of `lastHappiness` with editable points (drag a point
 /// vertically to change it).
 fn mood_chart(ui: &mut Ui, mood: &mut [Value], names: Names) -> bool {

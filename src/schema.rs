@@ -130,9 +130,14 @@ mod limbs;
 mod run;
 
 pub use body::{BODY_GROUPS, body_field};
-pub use character::{CHARACTERS, LAYERS, SKILLS, SkillDef, experience_for_level};
+pub use character::{
+    CHARACTERS, HOLD_SLOTS, HoldSlotDef, LAYERS, SKILLS, SkillDef, experience_for_level,
+};
 pub use limbs::{LIMB_FIELDS, LIMBS, LimbDef, limb_field};
-pub use run::{RUN_SETTINGS, RunSettingDef, RunSettingKind, run_setting};
+pub use run::{
+    PresetValue, RUN_PRESETS, RUN_SETTINGS, RunPreset, RunSettingDef, RunSettingKind, run_setting,
+    run_settings_for_preset,
+};
 
 #[cfg(test)]
 mod tests {
@@ -146,5 +151,27 @@ mod tests {
         assert_eq!(experience_for_level(14), 1255);
         assert_eq!(experience_for_level(15), 1484);
         assert_eq!(experience_for_level(0), 0);
+    }
+
+    #[test]
+    fn built_in_run_presets_cover_all_game_settings() {
+        let normal = run_settings_for_preset("normal").unwrap();
+        assert_eq!(normal.len(), RUN_SETTINGS.len());
+        assert_eq!(
+            normal
+                .iter()
+                .find(|setting| setting["Item1"] == "baselootdensity")
+                .unwrap()["Item2"],
+            1.0
+        );
+        assert_eq!(
+            run_settings_for_preset("relaxed")
+                .unwrap()
+                .iter()
+                .find(|setting| setting["Item1"] == "startingsupplies")
+                .unwrap()["Item2"],
+            2
+        );
+        assert!(run_settings_for_preset("missing").is_none());
     }
 }

@@ -11,7 +11,6 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Capacity remaining:" => Some("Остаток вместимости:"),
         "Max weight/item:" => Some("Макс. вес предмета:"),
         "Encumbrance reduction:" => Some("Снижение нагрузки:"),
-        "Over capacity by {weight} u" => Some("Превышение вместимости на {weight} u"),
         "Remaining capacity is maximum weight minus the full weight of stored items; encumbrance reduction affects carried load, not storage capacity." => {
             Some(
                 "Остаток вместимости равен максимальному весу за вычетом полного веса хранящихся предметов; снижение нагрузки влияет на переносимый вес, но не на вместимость.",

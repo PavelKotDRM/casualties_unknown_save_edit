@@ -421,6 +421,21 @@ impl Names<'_> {
         self.text(&name).into_owned()
     }
 
+    /// Hold slot display name (`items[].slot`), e.g. right hand or mouth.
+    pub fn hold_slot(&self, slot: i64) -> String {
+        let Some(def) = usize::try_from(slot)
+            .ok()
+            .and_then(|i| schema::HOLD_SLOTS.get(i))
+        else {
+            return self
+                .text("Unknown slot {index}")
+                .replace("{index}", &slot.to_string());
+        };
+        self.locale
+            .and_then(|l| l.other(def.locale_key))
+            .map_or_else(|| self.text(def.name).into_owned(), str::to_owned)
+    }
+
     /// Name of the layer the run resumes on (`biome` field).
     pub fn layer(&self, biome: i64) -> String {
         let from_locale = biome
@@ -516,7 +531,15 @@ mod tests {
         );
         assert_eq!(
             InterfaceLanguage::Russian.text("Over capacity by {weight} u"),
-            "Превышение вместимости на {weight} u"
+            "Превышена вместимость на {weight} u"
+        );
+        assert_eq!(
+            InterfaceLanguage::Russian.text("Space left: {weight} u"),
+            "Свободно: {weight} u"
+        );
+        assert_eq!(
+            InterfaceLanguage::Russian.text("Inside {item}: full"),
+            "Внутри «{item}»: места нет"
         );
     }
 

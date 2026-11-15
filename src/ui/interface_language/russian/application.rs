@@ -1,5 +1,25 @@
 pub(super) fn translate(source: &str) -> Option<&'static str> {
     match source {
+        "New save…" => Some("Новое сохранение…"),
+        "Create new save…" => Some("Создать новое сохранение…"),
+        "Create new save" => Some("Создать новое сохранение"),
+        "Create save…" => Some("Создать сохранение…"),
+        "World settings" => Some("Настройки мира"),
+        "World preset:" => Some("Шаблон мира:"),
+        "Starting layer:" => Some("Начальный этаж:"),
+        "Choose a built-in game preset or customize every world setting." => {
+            Some("Выберите игровой шаблон или настройте каждый параметр мира.")
+        }
+        "Choose the character after setting up the world." => {
+            Some("Выберите персонажа после настройки мира.")
+        }
+        "Next" => Some("Далее"),
+        "Back" => Some("Назад"),
+        "Custom" => Some("Настраиваемый"),
+        "Normal" => Some("Обычный"),
+        "Relaxed" => Some("Облегчённый"),
+        "Paradise" => Some("Рай"),
+        "Desolate" => Some("Безлюдный"),
         "Open game save" => Some("Открыть сохранение игры"),
         "Open…" => Some("Открыть…"),
         "Reload from disk" => Some("Перезагрузить с диска"),

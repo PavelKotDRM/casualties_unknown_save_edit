@@ -4,8 +4,8 @@ use egui::{ProgressBar, RichText, Ui};
 use serde_json::{Map, Value, json};
 
 use super::{
-    InventoryState, Names, card, category_icon, colors, component_short_name, item_wear_slot,
-    items, location_combo, row_label,
+    InventoryState, Names, card, category_icon, colors, component_short_name, holder_rules,
+    is_hand_slot, item_wear_slot, items, location_combo, missing_wear_limb, row_label,
 };
 use crate::catalog;
 use crate::game_data::ItemStats;
@@ -158,9 +158,11 @@ pub(super) fn details(
             "item_location",
             data,
             &mut loc,
-            item_wear_slot(&id, stats),
+            holder_rules(&id, stats),
             true,
-            names.interface_language,
+            names,
+            stats,
+            index,
         ) && let Some(n) = model::move_to_location(data, index, &loc)
         {
             state.selected = Some(n);
@@ -171,6 +173,30 @@ pub(super) fn details(
         return true;
     }
     let expected_wear_slot = item_wear_slot(&id, stats);
+    let is_holder = model::group_items(data)
+        .iter()
+        .any(|g| g.location == loc && g.indices.first() == Some(&index));
+    let holder = holder_rules(&id, stats);
+    if let Location::Slot(_) = loc
+        && is_holder
+        && holder.not_holdable
+    {
+        ui.colored_label(
+            colors::WARN,
+            names.text(
+                "⚠ The game doesn't let clothing be held; wear it or store it in a container.",
+            ),
+        );
+    } else if let Location::Slot(slot) = loc
+        && is_holder
+        && holder.hands_only
+        && !is_hand_slot(slot)
+    {
+        ui.colored_label(
+            colors::WARN,
+            names.text("⚠ The game only lets this item be held in hands; move it to a hand slot."),
+        );
+    }
     if let Location::Worn(w) = &loc
         && !w.is_empty()
         && expected_wear_slot != Some(w.as_str())
@@ -184,6 +210,44 @@ pub(super) fn details(
                 .text("⚠ This item belongs in wear slot {expected}; it is assigned to {actual}.")
                 .replace("{expected}", expected_wear_slot.unwrap_or("none"))
                 .replace("{actual}", w),
+        );
+    }
+    if let Location::Worn(w) = &loc
+        && is_holder
+        && expected_wear_slot == Some(w.as_str())
+        && let Some(limb) = missing_wear_limb(data, holder)
+    {
+        ui.colored_label(
+            colors::BAD,
+            names
+                .text(
+                    "⚠ {limb} is dismembered: the game won't wear this item and drops it on load.",
+                )
+                .replace("{limb}", &names.limb(limb)),
+        );
+    }
+    if let Location::Slot(slot) = loc
+        && usize::try_from(slot).map_or(true, |s| s >= crate::schema::HOLD_SLOTS.len())
+    {
+        ui.colored_label(
+            colors::BAD,
+            names.text(
+                "⚠ The game has no such slot: loading fails for this item and shifts the saved component data of later items.",
+            ),
+        );
+    }
+    let condition = items(data)
+        .get(index)
+        .and_then(|item| item.get("condition"))
+        .and_then(Value::as_f64);
+    if condition.is_some_and(|c| c <= 0.0)
+        && stats.get(&id).is_some_and(|s| s.destroy_at_zero_condition)
+    {
+        ui.colored_label(
+            colors::BAD,
+            names.text(
+                "⚠ Condition 0: the game destroys this item (a container spills its contents).",
+            ),
         );
     }
 
@@ -268,10 +332,10 @@ fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str, names: Names
     if let Some(slot) = obj.get_mut("swatch") {
         ui.horizontal(|ui| {
             row_label(ui, names, "Swatch");
-            changed |= number_editor(ui, slot, 0.05);
+            changed |= swatch_picker(ui, slot);
         })
         .response
-        .on_hover_text("Colour variant index");
+        .on_hover_text(names.text("Colour variant index"));
     }
     let known = |k: &str| {
         matches!(
@@ -300,6 +364,39 @@ fn ensure_components(data: &mut Value, index: usize) -> Option<&mut Map<String, 
         *slot = json!({});
     }
     slot.as_object_mut()
+}
+
+/// `Item.ColorSwatches` from the game; `swatch` indexes this table.
+const SWATCH_COLORS: [[f32; 3]; 8] = [
+    [1.0, 1.0, 1.0],
+    [0.5, 0.5, 0.5],
+    [0.28, 1.0, 0.28],
+    [0.96, 0.67, 0.17],
+    [0.9, 0.333, 1.0],
+    [0.4, 0.333, 1.0],
+    [0.2, 1.0, 1.0],
+    [1.0, 0.988, 0.4],
+];
+
+fn swatch_picker(ui: &mut Ui, value: &mut Value) -> bool {
+    let current = value.as_i64();
+    let mut changed = false;
+    for (index, [r, g, b]) in SWATCH_COLORS.iter().enumerate() {
+        let color =
+            egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
+        let selected = current == Some(index as i64);
+        let text = RichText::new(if selected { "■" } else { "□" })
+            .color(color)
+            .size(18.0);
+        if ui.selectable_label(selected, text).clicked() && !selected {
+            *value = json!(index);
+            changed = true;
+        }
+    }
+    if !current.is_some_and(|c| (0..SWATCH_COLORS.len() as i64).contains(&c)) {
+        ui.colored_label(colors::BAD, format!("⚠ {value}"));
+    }
+    changed
 }
 
 pub(super) const WATER: &str =

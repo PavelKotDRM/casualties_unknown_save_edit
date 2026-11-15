@@ -31,6 +31,231 @@ pub struct RunSettingDef {
     pub section: &'static str,
 }
 
+/// Value type used by the game for one world setting.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PresetValue {
+    /// Toggle.
+    Bool(bool),
+    /// Slider value.
+    Float(f32),
+    /// Dropdown option index.
+    Index(i64),
+}
+
+impl PresetValue {
+    fn to_json(self) -> serde_json::Value {
+        match self {
+            Self::Bool(value) => serde_json::Value::Bool(value),
+            Self::Float(value) => serde_json::json!(value),
+            Self::Index(value) => serde_json::Value::from(value),
+        }
+    }
+}
+
+/// One built-in world setup offered by the game.
+#[derive(Debug, Clone, Copy)]
+pub struct RunPreset {
+    /// Stable preset id.
+    pub id: &'static str,
+    /// English fallback name.
+    pub name: &'static str,
+    /// Values that differ from the normal preset.
+    pub overrides: &'static [(&'static str, PresetValue)],
+}
+
+const NORMAL_SETTINGS: &[(&str, PresetValue)] = &[
+    ("unchipped", PresetValue::Bool(false)),
+    ("endless", PresetValue::Bool(false)),
+    ("baselootdensity", PresetValue::Float(1.0)),
+    ("lootmultiplier", PresetValue::Float(1.0)),
+    ("basetrapdensity", PresetValue::Float(1.0)),
+    ("trapincrease", PresetValue::Float(0.0)),
+    ("ambientlight", PresetValue::Index(0)),
+    ("timelimit", PresetValue::Float(60.0)),
+    ("oreamount", PresetValue::Float(1.0)),
+    ("layermodifierchance", PresetValue::Float(40.0)),
+    ("timebetweenearthquakes", PresetValue::Float(1.0)),
+    ("temperatureoffset", PresetValue::Float(0.0)),
+    ("allowlayerendmovement", PresetValue::Bool(false)),
+    ("startingsupplies", PresetValue::Index(1)),
+    ("xpgain", PresetValue::Float(1.0)),
+    ("metabolismrate", PresetValue::Float(1.0)),
+    ("healingrate", PresetValue::Float(1.0)),
+    ("fracturepain", PresetValue::Float(1.0)),
+    ("bleedrate", PresetValue::Float(1.0)),
+    ("infectionspeed", PresetValue::Float(1.0)),
+    ("infectionchance", PresetValue::Float(1.0)),
+    ("fibrillationrate", PresetValue::Float(1.0)),
+    ("moodnormalizationrate", PresetValue::Float(1.0)),
+    ("bonuslimbarmor", PresetValue::Float(0.0)),
+    ("staminaregen", PresetValue::Float(1.0)),
+    ("attackdamage", PresetValue::Float(1.0)),
+    ("minigamehandshake", PresetValue::Float(1.0)),
+    ("sleepcyclespeed", PresetValue::Float(1.0)),
+    ("encumbrancecap", PresetValue::Float(1.0)),
+    ("insulationmultiplier", PresetValue::Float(1.0)),
+    ("strokes", PresetValue::Bool(true)),
+    ("braindamagefx", PresetValue::Bool(true)),
+    ("forcesleep", PresetValue::Bool(true)),
+    ("lowmoodevents", PresetValue::Bool(true)),
+    ("liquidpushing", PresetValue::Bool(true)),
+    ("disfigurement", PresetValue::Bool(true)),
+    ("crushdepth", PresetValue::Bool(true)),
+    ("nosleeprestrictions", PresetValue::Bool(false)),
+    ("infinitelaststand", PresetValue::Bool(false)),
+    ("traderchance", PresetValue::Float(33.0)),
+    ("traderitemamount", PresetValue::Float(1.0)),
+    ("traderrepoffset", PresetValue::Float(0.0)),
+    ("enemystrength", PresetValue::Float(1.0)),
+    ("itemdecayrate", PresetValue::Float(1.0)),
+    ("lockpickprecision", PresetValue::Float(1.0)),
+    ("permanentaddiction", PresetValue::Bool(false)),
+    ("mindwiped", PresetValue::Bool(false)),
+    ("zeroskills", PresetValue::Bool(false)),
+    ("blind", PresetValue::Bool(false)),
+    ("amputee", PresetValue::Bool(false)),
+    ("immortalsnail", PresetValue::Bool(false)),
+];
+
+/// Built-in world presets read from the game's `RunSettings` initializer.
+pub const RUN_PRESETS: &[RunPreset] = &[
+    RunPreset {
+        id: "normal",
+        name: "Normal",
+        overrides: &[],
+    },
+    RunPreset {
+        id: "relaxed",
+        name: "Relaxed",
+        overrides: &[
+            ("baselootdensity", PresetValue::Float(1.15)),
+            ("basetrapdensity", PresetValue::Float(0.8)),
+            ("ambientlight", PresetValue::Index(1)),
+            ("timelimit", PresetValue::Float(120.0)),
+            ("startingsupplies", PresetValue::Index(2)),
+            ("enemystrength", PresetValue::Float(0.75)),
+            ("xpgain", PresetValue::Float(1.15)),
+            ("metabolismrate", PresetValue::Float(0.7)),
+            ("healingrate", PresetValue::Float(1.2)),
+            ("fracturepain", PresetValue::Float(0.67)),
+            ("bleedrate", PresetValue::Float(0.75)),
+            ("infectionspeed", PresetValue::Float(0.7)),
+            ("infectionchance", PresetValue::Float(0.75)),
+            ("fibrillationrate", PresetValue::Float(0.8)),
+            ("moodnormalizationrate", PresetValue::Float(1.25)),
+            ("staminaregen", PresetValue::Float(1.1)),
+            ("minigamehandshake", PresetValue::Float(0.66)),
+            ("insulationmultiplier", PresetValue::Float(1.15)),
+            ("forcesleep", PresetValue::Bool(false)),
+            ("crushdepth", PresetValue::Bool(false)),
+            ("traderrepoffset", PresetValue::Float(15.0)),
+            ("layermodifierchance", PresetValue::Float(20.0)),
+            ("itemdecayrate", PresetValue::Float(0.75)),
+            ("lockpickprecision", PresetValue::Float(1.5)),
+            ("timebetweenearthquakes", PresetValue::Float(1.5)),
+        ],
+    },
+    RunPreset {
+        id: "paradise",
+        name: "Paradise",
+        overrides: &[
+            ("baselootdensity", PresetValue::Float(1.5)),
+            ("basetrapdensity", PresetValue::Float(0.35)),
+            ("ambientlight", PresetValue::Index(2)),
+            ("timelimit", PresetValue::Float(180.0)),
+            ("startingsupplies", PresetValue::Index(2)),
+            ("enemystrength", PresetValue::Float(0.5)),
+            ("allowlayerendmovement", PresetValue::Bool(true)),
+            ("xpgain", PresetValue::Float(1.25)),
+            ("metabolismrate", PresetValue::Float(0.7)),
+            ("healingrate", PresetValue::Float(1.5)),
+            ("fracturepain", PresetValue::Float(0.4)),
+            ("bleedrate", PresetValue::Float(0.7)),
+            ("infectionspeed", PresetValue::Float(0.5)),
+            ("infectionchance", PresetValue::Float(0.75)),
+            ("fibrillationrate", PresetValue::Float(0.6)),
+            ("moodnormalizationrate", PresetValue::Float(1.25)),
+            ("staminaregen", PresetValue::Float(1.2)),
+            ("minigamehandshake", PresetValue::Float(0.2)),
+            ("insulationmultiplier", PresetValue::Float(1.3)),
+            ("forcesleep", PresetValue::Bool(false)),
+            ("liquidpushing", PresetValue::Bool(false)),
+            ("crushdepth", PresetValue::Bool(false)),
+            ("infinitelaststand", PresetValue::Bool(true)),
+            ("attackdamage", PresetValue::Float(1.5)),
+            ("encumbrancecap", PresetValue::Float(1.5)),
+            ("traderrepoffset", PresetValue::Float(25.0)),
+            ("traderchance", PresetValue::Float(50.0)),
+            ("traderitemamount", PresetValue::Float(1.25)),
+            ("itemdecayrate", PresetValue::Float(0.5)),
+            ("layermodifierchance", PresetValue::Float(10.0)),
+            ("lockpickprecision", PresetValue::Float(2.5)),
+            ("bonuslimbarmor", PresetValue::Float(0.25)),
+            ("timebetweenearthquakes", PresetValue::Float(2.0)),
+        ],
+    },
+    RunPreset {
+        id: "desolate",
+        name: "Desolate",
+        overrides: &[
+            ("baselootdensity", PresetValue::Float(0.4)),
+            ("basetrapdensity", PresetValue::Float(1.5)),
+            ("startingsupplies", PresetValue::Index(0)),
+            ("fracturepain", PresetValue::Float(1.25)),
+            ("moodnormalizationrate", PresetValue::Float(0.5)),
+            ("traderrepoffset", PresetValue::Float(-10.0)),
+            ("traderchance", PresetValue::Float(10.0)),
+            ("traderitemamount", PresetValue::Float(3.0)),
+            ("minigamehandshake", PresetValue::Float(2.0)),
+            ("layermodifierchance", PresetValue::Float(100.0)),
+            ("temperatureoffset", PresetValue::Float(-15.0)),
+            ("oreamount", PresetValue::Float(0.5)),
+            ("timebetweenearthquakes", PresetValue::Float(0.8)),
+        ],
+    },
+    RunPreset {
+        id: "unchipped",
+        name: "Unchipped",
+        overrides: &[
+            ("unchipped", PresetValue::Bool(true)),
+            ("timelimit", PresetValue::Float(300.0)),
+            ("startingsupplies", PresetValue::Index(0)),
+        ],
+    },
+    RunPreset {
+        id: "endless",
+        name: "Endless",
+        overrides: &[
+            ("endless", PresetValue::Bool(true)),
+            ("lootmultiplier", PresetValue::Float(0.95)),
+            ("trapincrease", PresetValue::Float(0.06)),
+        ],
+    },
+];
+
+/// Build the serialized setting list for one built-in game preset.
+pub fn run_settings_for_preset(id: &str) -> Option<Vec<serde_json::Value>> {
+    let preset = RUN_PRESETS.iter().find(|preset| preset.id == id)?;
+    Some(
+        RUN_SETTINGS
+            .iter()
+            .map(|setting| {
+                let value = preset
+                    .overrides
+                    .iter()
+                    .find_map(|(id, value)| (*id == setting.id).then_some(*value))
+                    .or_else(|| {
+                        NORMAL_SETTINGS
+                            .iter()
+                            .find_map(|(id, value)| (*id == setting.id).then_some(*value))
+                    })
+                    .expect("every run setting has a game default")
+                    .to_json();
+                serde_json::json!({"Item1": setting.id, "Item2": value})
+            })
+            .collect(),
+    )
+}
 const fn rs_bool(id: &'static str, label: &'static str, section: &'static str) -> RunSettingDef {
     RunSettingDef {
         id,

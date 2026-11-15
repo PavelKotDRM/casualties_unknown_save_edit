@@ -51,9 +51,10 @@ struct ItemRowState {
 }
 
 /// Human-readable name of a location.
-pub fn location_name(loc: &Location, language: super::InterfaceLanguage) -> String {
+pub fn location_name(loc: &Location, names: Names) -> String {
+    let language = names.interface_language;
     match loc {
-        Location::Slot(s) => format!("{} {s}", language.text("Inventory slot")),
+        Location::Slot(s) => names.hold_slot(*s),
         Location::Worn(w) if w.is_empty() => language
             .text("Unassigned (slot -1, no wear slot)")
             .into_owned(),
@@ -61,9 +62,34 @@ pub fn location_name(loc: &Location, language: super::InterfaceLanguage) -> Stri
     }
 }
 
+fn group_location_name(group: &model::ItemGroup, items: &[Value], names: Names) -> String {
+    let location = location_name(&group.location, names);
+    if !matches!(&group.location, Location::Slot(_)) {
+        return location;
+    }
+
+    let Some(item) = group.indices.first().and_then(|index| items.get(*index)) else {
+        return location;
+    };
+    let name = item
+        .get("label")
+        .and_then(Value::as_str)
+        .filter(|label| !label.trim().is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            item.get("id")
+                .and_then(Value::as_str)
+                .map(|id| names.item(id))
+        });
+    name.map_or(location.clone(), |name| format!("{location} · {name}"))
+}
+
 fn location_icon(loc: &Location) -> &'static str {
     match loc {
-        Location::Slot(_) => "✋",
+        Location::Slot(s) => usize::try_from(*s)
+            .ok()
+            .and_then(|i| crate::schema::HOLD_SLOTS.get(i))
+            .map_or("❓", |def| def.icon),
         Location::Worn(_) => "👕",
     }
 }
@@ -82,28 +108,78 @@ fn item_wear_slot<'a>(id: &str, stats: &'a HashMap<String, ItemStats>) -> Option
         .map(|item| item.wear_slot)
 }
 
+/// What an item needs to become the holder of an empty location.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct HolderRules<'a> {
+    /// Wear slot the item can be worn in.
+    wear_slot: Option<&'a str>,
+    /// The game only lets the item occupy a hand slot.
+    hands_only: bool,
+    /// Clothing that can only be worn or stored, never held in a body slot.
+    not_holdable: bool,
+    /// Limb object the item is worn on; it cannot be worn while that limb is missing.
+    wear_limb: Option<&'a str>,
+}
+
+fn holder_rules<'a>(id: &str, stats: &'a HashMap<String, ItemStats>) -> HolderRules<'a> {
+    HolderRules {
+        wear_slot: item_wear_slot(id, stats),
+        hands_only: stats.get(id).is_some_and(|item| item.only_hold_in_hands),
+        not_holdable: match stats.get(id) {
+            Some(item) => item.wearable && !item.wearable_can_be_held,
+            None => item_wear_slot(id, stats).is_some(),
+        },
+        wear_limb: stats
+            .get(id)
+            .and_then(|item| item.desired_wear_limb.as_deref()),
+    }
+}
+
+/// Index of the limb a wearable goes on when that limb is dismembered.
+fn missing_wear_limb(data: &Value, holder: HolderRules) -> Option<usize> {
+    let index = crate::schema::LIMBS
+        .iter()
+        .position(|limb| Some(limb.object) == holder.wear_limb)?;
+    data.get("limbs")
+        .and_then(|limbs| limbs.get(index))
+        .and_then(|limb| limb.get("dismembered"))
+        .and_then(Value::as_bool)
+        .filter(|missing| *missing)
+        .map(|_| index)
+}
+
+/// Where a new or reset item should go by default: a hand, or its wear slot
+/// for clothing that cannot be held.
+fn default_location(holder: HolderRules) -> Location {
+    match holder.wear_slot {
+        Some(slot) if holder.not_holdable => Location::Worn(slot.to_owned()),
+        _ => Location::Slot(0),
+    }
+}
+
+fn is_hand_slot(slot: i64) -> bool {
+    matches!(slot, 0 | 1)
+}
+
 /// Locations offered in choosers, with only compatible wear slots.
 fn location_choices(
     data: &Value,
-    allowed_wear_slot: Option<&str>,
+    holder: HolderRules,
     current: &Location,
     preserve_current: bool,
 ) -> Vec<Location> {
     let mut out: Vec<Location> = model::group_items(data)
         .into_iter()
         .map(|g| g.location)
-        .filter(|location| match location {
-            Location::Slot(_) => true,
-            Location::Worn(slot) => allowed_wear_slot == Some(slot.as_str()),
-        })
+        .filter(|location| holder_location_allowed(data, location, holder))
         .collect();
-    for s in 0..10 {
+    for s in 0..crate::schema::HOLD_SLOTS.len() as i64 {
         let l = Location::Slot(s);
         if !out.contains(&l) {
             out.push(l);
         }
     }
-    if let Some(slot) = allowed_wear_slot {
+    if let Some(slot) = holder.wear_slot {
         let l = Location::Worn(slot.to_owned());
         if !out.contains(&l) {
             out.push(l);
@@ -115,24 +191,55 @@ fn location_choices(
     out
 }
 
+/// Whether a location may be targeted: an occupied location stores the item
+/// inside its holder, while an empty one requires the item to be holdable
+/// there (a matching wear slot on a limb that is not dismembered, a hand for
+/// hands-only items, and never a body slot for clothing).
+fn holder_location_allowed(data: &Value, location: &Location, holder: HolderRules) -> bool {
+    let occupied = || {
+        model::group_items(data)
+            .iter()
+            .any(|group| &group.location == location)
+    };
+    match location {
+        Location::Slot(slot) => {
+            (!holder.not_holdable && (!holder.hands_only || is_hand_slot(*slot))) || occupied()
+        }
+        Location::Worn(slot) => {
+            (holder.wear_slot == Some(slot.as_str()) && missing_wear_limb(data, holder).is_none())
+                || (!slot.is_empty() && occupied())
+        }
+    }
+}
+
 fn location_combo(
     ui: &mut Ui,
     id: &str,
     data: &Value,
     current: &mut Location,
-    allowed_wear_slot: Option<&str>,
+    holder: HolderRules,
     preserve_current: bool,
-    language: super::InterfaceLanguage,
+    names: Names,
+    stats: &HashMap<String, ItemStats>,
+    item_index: usize,
 ) -> bool {
     let before = current.clone();
     egui::ComboBox::from_id_salt(id)
-        .selected_text(location_name(current, language))
+        .selected_text(location_name(current, names))
         .width(240.0)
         .height(400.0)
         .show_ui(ui, |ui| {
-            for loc in location_choices(data, allowed_wear_slot, current, preserve_current) {
-                let text = format!("{} {}", location_icon(&loc), location_name(&loc, language));
-                ui.selectable_value(current, loc, text);
+            for loc in location_choices(data, holder, current, preserve_current) {
+                let (description, color, can_move) =
+                    add::destination_status_for_move(data, &loc, item_index, stats, names);
+                let text = format!(
+                    "{} {} · {description}",
+                    location_icon(&loc),
+                    location_name(&loc, names)
+                );
+                ui.add_enabled_ui(can_move, |ui| {
+                    ui.selectable_value(current, loc, RichText::new(text).color(color));
+                });
             }
         });
     *current != before
@@ -312,15 +419,22 @@ fn item_list(
     for group in model::group_items(data) {
         card(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(
+            let header = ui.label(
                 RichText::new(format!(
                     "{}  {}",
                     location_icon(&group.location),
-                    location_name(&group.location, names.interface_language)
+                    group_location_name(&group, all, names)
                 ))
                 .strong()
                 .color(colors::ACCENT),
             );
+            if matches!(&group.location, Location::Slot(_)) {
+                header.on_hover_text(
+                    names
+                        .text("The first item in this slot is its holder; any following items are stored inside it.")
+                        .to_string(),
+                );
+            }
             for (pos, &i) in group.indices.iter().enumerate() {
                 let first = pos == 0;
                 let last = pos + 1 == group.indices.len();
@@ -344,6 +458,63 @@ fn item_list(
                         action = Some(a);
                     }
                 });
+                if first
+                    && let Some(id) = all[i].get("id").and_then(Value::as_str)
+                    && stats
+                        .get(id)
+                        .is_some_and(|item_stats| item_stats.container_capacity.is_some())
+                {
+                    if let Some(space) = model::container_space(data, i, stats) {
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            let (label, color) = if !space.complete {
+                                (
+                                    names.text("Container capacity unavailable").to_string(),
+                                    colors::WARN,
+                                )
+                            } else if space.over_capacity > 0.0 {
+                                (
+                                    names.text("Over capacity by {weight} u").replace(
+                                        "{weight}",
+                                        &format!("{:.2}", space.over_capacity),
+                                    ),
+                                    colors::BAD,
+                                )
+                            } else if space.remaining <= f32::EPSILON {
+                                (names.text("Full").to_string(), colors::BAD)
+                            } else {
+                                (
+                                    names
+                                        .text("Space left: {weight} u")
+                                        .replace("{weight}", &format!("{:.2}", space.remaining)),
+                                    colors::ACCENT,
+                                )
+                            };
+                            ui.colored_label(color, label);
+                            if space.complete {
+                                let fill = if space.capacity > 0.0 {
+                                    (space.used / space.capacity).clamp(0.0, 1.0)
+                                } else {
+                                    1.0
+                                };
+                                ui.add(
+                                    ProgressBar::new(fill)
+                                        .desired_width(120.0)
+                                        .show_percentage()
+                                        .fill(color),
+                                );
+                            }
+                        });
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            ui.colored_label(
+                                colors::WARN,
+                                names.text("Container capacity unavailable").to_string(),
+                            );
+                        });
+                    }
+                }
                 if first && group.indices.len() > 1 {
                     ui.horizontal(|ui| {
                         ui.add_space(22.0);
@@ -471,6 +642,7 @@ fn row_label(ui: &mut Ui, names: Names, text: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::InterfaceLanguage;
     use serde_json::json;
 
     #[test]
@@ -480,15 +652,94 @@ mod tests {
     }
 
     #[test]
-    fn location_choices_only_offer_the_supported_wear_slot() {
+    fn slot_group_name_identifies_its_holder_item() {
+        let data = json!({
+            "items": [
+                {"id": "bigpack", "slot": 3},
+                {"id": "bandage", "slot": 3},
+                {"id": "bandage", "slot": 9}
+            ]
+        });
+        let groups = model::group_items(&data);
+        let names = Names {
+            locale: None,
+            interface_language: InterfaceLanguage::English,
+        };
+
+        assert_eq!(
+            group_location_name(&groups[0], items(&data), names),
+            "Upper back · Bigpack"
+        );
+        assert_eq!(
+            group_location_name(&groups[1], items(&data), names),
+            "Unknown slot 9 · Bandage"
+        );
+        assert_eq!(location_name(&Location::Slot(0), names), "Right hand");
+        assert_eq!(location_name(&Location::Slot(2), names), "Mouth");
+    }
+
+    fn wear(slot: Option<&str>) -> HolderRules<'_> {
+        HolderRules {
+            wear_slot: slot,
+            ..HolderRules::default()
+        }
+    }
+
+    #[test]
+    fn hands_only_items_need_a_hand_unless_stored_in_a_container() {
+        let data = json!({"items": [{"id": "bigpack", "slot": 3}]});
+        let holder = HolderRules {
+            hands_only: true,
+            ..HolderRules::default()
+        };
+        assert!(holder_location_allowed(&data, &Location::Slot(0), holder));
+        assert!(holder_location_allowed(&data, &Location::Slot(1), holder));
+        assert!(!holder_location_allowed(&data, &Location::Slot(2), holder));
+        assert!(!holder_location_allowed(&data, &Location::Slot(5), holder));
+        // An occupied back slot stores the item inside the backpack.
+        assert!(holder_location_allowed(&data, &Location::Slot(3), holder));
+    }
+
+    #[test]
+    fn location_choices_offer_only_real_hold_slots() {
+        let choices = location_choices(
+            &json!({"items": []}),
+            HolderRules::default(),
+            &Location::Slot(0),
+            false,
+        );
+        assert!(choices.contains(&Location::Slot(5)));
+        assert!(!choices.contains(&Location::Slot(6)));
+    }
+
+    #[test]
+    fn location_choices_only_offer_the_supported_empty_wear_slot() {
         let data = json!({
             "items": [
                 {"id": "coat", "slot": -1, "wearSlot": "torso"}
             ]
         });
-        let choices = location_choices(&data, Some("head"), &Location::Slot(0), false);
+        let choices = location_choices(&data, wear(Some("head")), &Location::Slot(0), false);
         assert!(choices.contains(&Location::Worn("head".to_owned())));
-        assert!(!choices.contains(&Location::Worn("torso".to_owned())));
+        assert!(choices.contains(&Location::Worn("torso".to_owned())));
+        assert!(!choices.contains(&Location::Worn("back".to_owned())));
+    }
+
+    #[test]
+    fn occupied_wear_slots_are_offered_as_container_destinations() {
+        let data = json!({
+            "items": [
+                {"id": "holster", "slot": -1, "wearSlot": "thigh"},
+                {"id": "bandage", "slot": 0}
+            ]
+        });
+        let choices = location_choices(&data, HolderRules::default(), &Location::Slot(0), false);
+        assert!(choices.contains(&Location::Worn("thigh".to_owned())));
+        assert!(!holder_location_allowed(
+            &data,
+            &Location::Worn("head".to_owned()),
+            HolderRules::default()
+        ));
     }
 
     #[test]
@@ -499,7 +750,7 @@ mod tests {
             ]
         });
         let current = Location::Worn("torso".to_owned());
-        let choices = location_choices(&data, Some("head"), &current, true);
+        let choices = location_choices(&data, wear(Some("head")), &current, true);
         assert!(choices.contains(&current));
         assert!(choices.contains(&Location::Worn("head".to_owned())));
     }
@@ -520,10 +771,16 @@ mod tests {
                 wear_slot: None,
                 armor: None,
                 insulation: None,
+                item_tags: Default::default(),
                 container_capacity: None,
                 container_max_item_weight: None,
                 container_encumbrance: None,
+                container_tag_restriction: None,
                 liquid_capacity: None,
+                only_hold_in_hands: false,
+                wearable_can_be_held: false,
+                desired_wear_limb: None,
+                destroy_at_zero_condition: false,
             },
         )]);
         assert_eq!(item_wear_slot(item.id, &stats), None);
@@ -547,15 +804,25 @@ mod tests {
                 wear_slot: Some("head".to_owned()),
                 armor: None,
                 insulation: None,
+                item_tags: Default::default(),
                 container_capacity: None,
                 container_max_item_weight: None,
                 container_encumbrance: None,
+                container_tag_restriction: None,
                 liquid_capacity: None,
+                only_hold_in_hands: false,
+                wearable_can_be_held: false,
+                desired_wear_limb: None,
+                destroy_at_zero_condition: false,
             },
         )]);
 
-        assert!(add::do_add(&mut data, &mut state, &stats));
-        assert_eq!(data["items"][0]["slot"], 0);
-        assert_eq!(data["items"][0]["wearSlot"], Value::Null);
+        let names = Names {
+            locale: None,
+            interface_language: InterfaceLanguage::English,
+        };
+        assert!(add::do_add(&mut data, &mut state, &stats, names));
+        assert_eq!(data["items"][0]["slot"], -1);
+        assert_eq!(data["items"][0]["wearSlot"], "head");
     }
 }

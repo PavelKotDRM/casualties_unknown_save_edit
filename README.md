@@ -12,12 +12,13 @@ The game stores its run in `save.sv`, which is gzip-compressed JSON. The editor 
 | **Character** | Character type, height, age and id. Skills (STR / RES / INT) with level ± buttons that recalculate XP bounds exactly as the game does. |
 | **Health** | All body values grouped into cards (vitals, needs, blood, temperature, …) with coloured gauges you can drag. Restore vitals and fill needs. |
 | **Limbs** | Painted body figure coloured by condition, with markers for bleeding, infection, fracture, dislocation, tourniquet, dismemberment and prosthetics. Click a limb to edit it, or heal one or all limbs, including regrowing dismembered ones. |
-| **Inventory** | Items grouped by slot or worn location, with contents, verified weight, armor and insulation stats. Compatible wear slots are offered when moving or adding equipment; existing incompatible assignments are retained and flagged for repair. The editor calculates carrying load and warns when the character is overburdened. |
+| **Inventory** | Items grouped by hold slot (right hand, left hand, mouth, upper, middle and lower back — the game's six `slot` indices) or worn location, with contents, verified weight, armor and insulation stats. Hands-only items (toolbox, water jug, pickaxes, sledgehammer and others flagged `onlyHoldInHands` by the game) can be held only in the right or left hand, though they may still be stored inside containers. Clothing likewise cannot be held in any body slot: it is either worn in its own wear slot or stored inside a container (the game's only exception is the autopump). The editor also follows the game's load rules: clothing cannot be worn on a dismembered limb, a container that still holds items cannot be stored in another container, the colour swatch is limited to the game's eight colours, and warnings flag items in non-existent slots and condition-0 items that the game destroys. Compatible wear slots are offered when moving or adding equipment, and occupied wear slots (such as a worn thigh holster or backpack) are offered as container destinations; existing incompatible assignments are retained and flagged for repair. The editor calculates carrying load and warns when the character is overburdened. |
 | **Run** | Layer, time, distance and calories. All run settings with sliders, checkboxes and dropdowns. Mood chart with draggable points. Saved recipes. |
 | **Raw JSON** | Collapsible / expandable tree with filtering, type changes, a context menu (copy path, copy JSON, delete) and a full text editor with validation. |
 
 Other features:
 
+- **Create a new save.** Choose one of the game's built-in world presets or customize every world setting, set the starting layer, then configure the character. The wizard writes a new `.sv` save or plain `.json` file.
 - **Backups.** A timestamped copy is made in a `SaveEditorBackups` folder next to the save every time a file is opened. You can also make backups manually, and browse or restore them from *File → Backups…*.
 - **Undo / redo** (Ctrl+Z / Ctrl+Y). Unsaved changes are protected when you open another file or close the window.
 - **Import / export** a pretty-printed, human-readable JSON copy (*File → Export JSON…* / *Import JSON…*).
@@ -44,9 +45,19 @@ The executable is `target/release/cu_save_editor.exe`. API documentation is avai
 3. Edit, then press **Save** (Ctrl+S).
 4. Load the run in the game.
 
+To start from scratch, use *File → New save…*. Choose a built-in world preset
+or customize the run settings, select the starting layer, and then configure
+the character. Creating the save opens the normal save-file picker; use the
+game's `save.sv` location and `.sv` extension for a game save.
+
 Editor settings (game folder, game-name language, and interface language) are stored in `%APPDATA%\cu_save_editor\config.json`.
 
 Item weights and supported wearable slots come from the installed game rather than the editor's fallback catalogue. Carrying capacity is computed from the saved body state and run settings; when stats are missing, the UI marks the estimate incomplete instead of claiming the character is under capacity.
+
+Container destinations are restricted by the game's item tags, per-item weight
+limits, and remaining capacity. Full or incompatible containers are disabled
+when adding or moving items; container details show remaining capacity and
+whether the container can accept the selected item.
 
 Inventory shows two different totals. **Game load** is shown in the game's
 weight units (`u`): item weights are combined with container encumbrance

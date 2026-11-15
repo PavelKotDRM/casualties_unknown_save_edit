@@ -18,21 +18,35 @@ pub struct ItemStats {
     pub wear_slot: Option<String>,
     pub armor: Option<f32>,
     pub insulation: Option<f32>,
+    /// Tags used by the game to decide which containers can hold this item.
+    pub item_tags: HashSet<String>,
     /// Maximum total contained item weight, in game units.
     pub container_capacity: Option<f32>,
     /// Maximum weight of one stored item, in game units.
     pub container_max_item_weight: Option<f32>,
     /// Fraction of stored item weight added to the carried load.
     pub container_encumbrance: Option<f32>,
+    /// Allowed item tags, or an empty set for an unrestricted container.
+    pub container_tag_restriction: Option<HashSet<String>>,
     /// Capacity in millilitres for game-defined liquid items.
     pub liquid_capacity: Option<f32>,
+    /// The game only lets this item occupy a hand slot (`onlyHoldInHands`).
+    pub only_hold_in_hands: bool,
+    /// A wearable that may still occupy a body slot (`wearableCanBeHeld`).
+    pub wearable_can_be_held: bool,
+    /// Limb object (`Head`, `UpTorso`…) a wearable is put on; the game refuses
+    /// to wear it while that limb is dismembered.
+    pub desired_wear_limb: Option<String>,
+    /// The game destroys the item when its condition reaches zero.
+    pub destroy_at_zero_condition: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct ContainerMetadata {
     capacity: f32,
     max_item_weight: f32,
     encumbrance_multiplier: f32,
+    tag_restriction: HashSet<String>,
 }
 
 impl ItemStats {
@@ -43,6 +57,12 @@ impl ItemStats {
         } else {
             self.weight
         }
+    }
+
+    /// Whether this container accepts an item, matching the game's tag intersection rule.
+    pub fn accepts_item(&self, item: &ItemStats) -> Option<bool> {
+        let restrictions = self.container_tag_restriction.as_ref()?;
+        Some(restrictions.is_empty() || restrictions.iter().any(|tag| item.item_tags.contains(tag)))
     }
 }
 
@@ -66,6 +86,7 @@ pub fn load_item_stats(game_dir: &Path) -> Result<HashMap<String, ItemStats>, St
             item.container_capacity = Some(container.capacity);
             item.container_max_item_weight = Some(container.max_item_weight);
             item.container_encumbrance = Some(container.encumbrance_multiplier);
+            item.container_tag_restriction = Some(container.tag_restriction);
         }
     }
     Ok(stats)
@@ -184,6 +205,9 @@ fn parse_item_definitions(assembly: &CilObject) -> Result<HashMap<String, ItemSt
             } else {
                 None
             };
+            let item_tags = string_field(&fields, "tags")
+                .map(|tags| tags.split(',').map(str::to_owned).collect())
+                .unwrap_or_default();
             Ok((
                 id,
                 ItemStats {
@@ -195,10 +219,19 @@ fn parse_item_definitions(assembly: &CilObject) -> Result<HashMap<String, ItemSt
                     wear_slot,
                     armor: number_field(&fields, "wearableArmor"),
                     insulation: number_field(&fields, "wearableIsolation"),
+                    item_tags,
                     container_capacity: None,
                     container_max_item_weight: None,
                     container_encumbrance: None,
+                    container_tag_restriction: None,
                     liquid_capacity,
+                    only_hold_in_hands: bool_field(&fields, "onlyHoldInHands").unwrap_or(false),
+                    wearable_can_be_held: bool_field(&fields, "wearableCanBeHeld").unwrap_or(false),
+                    desired_wear_limb: string_field(&fields, "desiredWearLimb")
+                        .filter(|limb| !limb.is_empty())
+                        .map(str::to_owned),
+                    destroy_at_zero_condition: bool_field(&fields, "destroyAtZeroCondition")
+                        .unwrap_or(false),
                 },
             ))
         })
@@ -321,6 +354,10 @@ fn parse_container_metadata(data_dir: &Path) -> Result<HashMap<String, Container
             encumbrance_multiplier: read_f32(&bytes, data_offset + 8)
                 .filter(|value| value.is_finite() && *value >= 0.0)
                 .ok_or_else(|| "Container has an invalid encumbrance multiplier".to_owned())?,
+            tag_restriction: read_string_array(&bytes, data_offset + 16)
+                .ok_or_else(|| "Container has invalid tag restrictions".to_owned())?
+                .into_iter()
+                .collect(),
         };
         let game_object = studio
             .object(container.file_index(), game_object.1)
@@ -358,11 +395,12 @@ fn parse_container_metadata(data_dir: &Path) -> Result<HashMap<String, Container
                 .ok_or_else(|| "Item component has an invalid MonoBehaviour header".to_owned())?;
             let id = read_aligned_string(&item_bytes, item_offset)
                 .ok_or_else(|| "Item component has an invalid item id".to_owned())?;
-            if let Some(previous) = containers.insert(id.clone(), metadata)
+            if let Some(previous) = containers.insert(id.clone(), metadata.clone())
                 && ((previous.capacity - metadata.capacity).abs() > f32::EPSILON
                     || (previous.max_item_weight - metadata.max_item_weight).abs() > f32::EPSILON
                     || (previous.encumbrance_multiplier - metadata.encumbrance_multiplier).abs()
-                        > f32::EPSILON)
+                        > f32::EPSILON
+                    || previous.tag_restriction != metadata.tag_restriction)
             {
                 return Err(format!(
                     "Container metadata for item {id:?} has conflicting values"
@@ -398,6 +436,21 @@ fn read_aligned_string_at(bytes: &[u8], offset: usize) -> Option<(String, usize)
     Some((value, next))
 }
 
+fn read_string_array(bytes: &[u8], offset: usize) -> Option<Vec<String>> {
+    let count = usize::try_from(read_i32(bytes, offset)?).ok()?;
+    if count > 1024 {
+        return None;
+    }
+    let mut next = offset.checked_add(4)?;
+    let mut values = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (value, string_end) = read_aligned_string_at(bytes, next)?;
+        values.push(value);
+        next = string_end;
+    }
+    Some(values)
+}
+
 fn read_pptr(bytes: &[u8], offset: usize) -> Option<(i32, i64)> {
     Some((
         read_i32(bytes, offset)?,
@@ -430,10 +483,16 @@ mod tests {
             wear_slot: None,
             armor: None,
             insulation: None,
+            item_tags: HashSet::new(),
             container_capacity: None,
             container_max_item_weight: None,
             container_encumbrance: None,
+            container_tag_restriction: None,
             liquid_capacity: None,
+            only_hold_in_hands: false,
+            wearable_can_be_held: false,
+            desired_wear_limb: None,
+            destroy_at_zero_condition: false,
         }
     }
 
@@ -444,6 +503,40 @@ mod tests {
         assert!((scaled.total_weight(0.5) - 1.05).abs() < f32::EPSILON);
         assert_eq!(scaled.total_weight(2.0), 2.0);
         assert_eq!(item_stats(false).total_weight(0.0), 2.0);
+    }
+
+    #[test]
+    fn container_tag_restrictions_match_any_shared_item_tag() {
+        let mut container = item_stats(false);
+        container.container_tag_restriction =
+            Some(HashSet::from(["bullet".to_owned(), "battery".to_owned()]));
+        let mut allowed_item = item_stats(false);
+        allowed_item.item_tags = HashSet::from(["ammo".to_owned(), "bullet".to_owned()]);
+        let disallowed_item = item_stats(false);
+
+        assert_eq!(container.accepts_item(&allowed_item), Some(true));
+        assert_eq!(container.accepts_item(&disallowed_item), Some(false));
+
+        container.container_tag_restriction = Some(HashSet::new());
+        assert_eq!(container.accepts_item(&disallowed_item), Some(true));
+        assert_eq!(item_stats(false).accepts_item(&allowed_item), None);
+    }
+
+    #[test]
+    fn string_array_reads_aligned_entries_and_rejects_truncation() {
+        let mut bytes = 2_i32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&6_i32.to_le_bytes());
+        bytes.extend_from_slice(b"bullet");
+        bytes.extend_from_slice(&[0, 0]);
+        bytes.extend_from_slice(&7_i32.to_le_bytes());
+        bytes.extend_from_slice(b"battery");
+        bytes.push(0);
+
+        assert_eq!(
+            read_string_array(&bytes, 0),
+            Some(vec!["bullet".to_owned(), "battery".to_owned()])
+        );
+        assert_eq!(read_string_array(&bytes[..bytes.len() - 3], 0), None);
     }
 
     #[test]

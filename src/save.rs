@@ -23,9 +23,10 @@ use std::path::{Path, PathBuf};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use crate::json;
+use crate::schema::{self, Good, Kind};
 
 /// File name of the save written by the game.
 pub const SAVE_FILE_NAME: &str = "save.sv";
@@ -112,6 +113,89 @@ pub fn validate(value: &Value) -> Result<(), SaveError> {
         }
     }
     Ok(())
+}
+
+/// Creates a clean save document using the game's normal world preset.
+pub fn new_game_data() -> Value {
+    let mut body = Map::new();
+    for group in schema::BODY_GROUPS {
+        for field in group.fields {
+            body.insert(field.key.to_owned(), default_field_value(field));
+        }
+    }
+    body.insert("desensitizedMult".to_owned(), json!(1.0));
+
+    let mut skills = Map::new();
+    for skill in schema::SKILLS {
+        skills.insert(skill.key.to_owned(), Value::from(10));
+        skills.insert(format!("exp{}", skill.key), Value::from(0.0));
+        skills.insert(format!("min{}", skill.key), Value::from(0));
+        skills.insert(format!("max{}", skill.key), Value::from(0));
+        skills.insert(format!("{}GainMult", skill.key), Value::from(1.0));
+        skills.insert(format!("{}From10", skill.key), Value::from(0.0));
+    }
+    for skill in schema::SKILLS {
+        crate::model::set_skill_level(&mut skills, skill.key, 10);
+    }
+    body.insert("skills".to_owned(), Value::Object(skills));
+
+    let limbs: Vec<_> = schema::LIMBS
+        .iter()
+        .map(|_| {
+            let mut limb = Map::new();
+            for field in schema::LIMB_FIELDS {
+                limb.insert(field.key.to_owned(), default_field_value(field));
+            }
+            limb.insert("prostheticInfo".to_owned(), json!({}));
+            Value::Object(limb)
+        })
+        .collect();
+    let limb_components = vec![json!({}); schema::LIMBS.len()];
+    let mood_history = vec![Value::from(0.0); 10];
+    let data = json!({
+        "body": body,
+        "limbs": limbs,
+        "items": [],
+        "itemComponents": [],
+        "bodyComponents": {},
+        "limbComponents": limb_components,
+        "biome": 0,
+        "endlessLoops": 0,
+        "totalTraveled": 0.0,
+        "runTime": 0.0,
+        "cHeight": 100,
+        "cAge": 20,
+        "cId": 1,
+        "cVer": 0,
+        "savedRecipeData": {"saved": []},
+        "lastHappiness": mood_history,
+        "trapRarity": 1.0,
+        "lootRarity": 1.0,
+        "caloriesConsumed": 0.0,
+        "character": 0,
+        "isMercRun": false,
+        "cheatedSave": false,
+        "runSettings": schema::run_settings_for_preset("normal")
+            .expect("the normal game preset must exist"),
+    });
+    data
+}
+
+fn default_field_value(field: &schema::FieldSpec) -> Value {
+    match field.kind {
+        Kind::Gauge => {
+            let value = match field.good {
+                Good::High => field.max,
+                Good::Low => field.min,
+                Good::Near(value) => value,
+                Good::Neutral => 0.0,
+            };
+            json!(value)
+        }
+        Kind::Number => json!(0.0),
+        Kind::Int => Value::from(0),
+        Kind::Flag => Value::Bool(false),
+    }
 }
 
 /// Encodes a save for writing to disk.
@@ -284,6 +368,30 @@ mod tests {
             "items": [{"id": "waterbottle", "wearSlot": null, "label": "Фляга"}],
             "runTime": 7348.6626
         })
+    }
+
+    #[test]
+    fn new_game_data_has_a_clean_inventory_and_complete_known_settings() {
+        let data = new_game_data();
+
+        validate(&data).unwrap();
+        assert_eq!(data["items"], json!([]));
+        assert_eq!(data["itemComponents"], json!([]));
+        assert_eq!(data["limbs"].as_array().unwrap().len(), schema::LIMBS.len());
+        assert_eq!(
+            data["runSettings"].as_array().unwrap().len(),
+            schema::RUN_SETTINGS.len()
+        );
+        assert_eq!(data["body"]["skills"]["STR"], 10);
+        assert_eq!(data["body"]["skills"]["minSTR"], 640);
+        assert_eq!(data["body"]["bloodVolume"], 100.0);
+        assert_eq!(data["body"]["desensitizedMult"], 1.0);
+        assert_eq!(data["limbs"][0]["prostheticInfo"], json!({}));
+        assert_eq!(
+            data["limbComponents"].as_array().unwrap().len(),
+            schema::LIMBS.len()
+        );
+        assert_eq!(data["lastHappiness"].as_array().unwrap().len(), 10);
     }
 
     #[test]
