@@ -168,8 +168,9 @@ pub fn show(
             names
                 .text("The first item of a location is held / worn; the following ones are stored inside it.")
         ));
+    });
+    ui.horizontal_wrapped(|ui| {
         if let Some(load) = model::carry_load(data, stats) {
-            ui.separator();
             let color = if load.complete && load.weight > load.capacity {
                 colors::BAD
             } else {
@@ -179,15 +180,15 @@ pub fn show(
                 color,
                 format!(
                     "{}: {:.1} / {:.1} kg",
-                    names.text("Load"),
+                    names.text("Game load"),
                     load.weight,
                     load.capacity
                 ),
-            );
+            ).on_hover_text(names.text("Game load uses item weights and container encumbrance multipliers. Liquid containers scale with their fill level.").to_string());
             if !load.complete {
                 ui.colored_label(
                     colors::WARN,
-                    names.text("Incomplete: some item or container stats are unavailable.")
+                    names.text("Incomplete: item, container or liquid data is unavailable.")
                         .to_string(),
                 );
             } else if load.weight > load.capacity {
@@ -203,6 +204,13 @@ pub fn show(
                     .text("Carry capacity cannot be calculated from this save.")
                     .to_string(),
             );
+        }
+        let physical = model::physical_load(data, stats);
+        ui.separator();
+        ui.label(format!("{}: ≈{:.2} kg", names.text("Physical weight"), physical.weight))
+            .on_hover_text(names.text("Approximation: liquids use 1 kg per litre; empty container weight is inferred from the game's minimum item weight. Container encumbrance modifiers do not apply.").to_string());
+        if !physical.complete {
+            ui.colored_label(colors::WARN, names.text("Physical estimate incomplete").to_string());
         }
     });
     ui.separator();
@@ -314,8 +322,8 @@ fn item_list(
                         ui,
                         &all[i],
                         i,
+                        model::item_weights(data, i, stats),
                         names,
-                        stats,
                         selected == Some(i),
                         first,
                         last,
@@ -348,8 +356,8 @@ fn item_row(
     ui: &mut Ui,
     item: &Value,
     i: usize,
+    weights: model::ItemWeights,
     names: Names,
-    stats: &HashMap<String, ItemStats>,
     selected: bool,
     first: bool,
     last: bool,
@@ -366,12 +374,9 @@ fn item_row(
     if r.clicked() {
         action = Some(RowAction::Select(i));
     }
-    if let Some(item_stats) = stats.get(id) {
-        ui.weak(format!(
-            "{:.1} kg",
-            item_stats
-                .total_weight(item.get("condition").and_then(Value::as_f64).unwrap_or(1.0) as f32)
-        ));
+    if let Some(weight) = weights.game {
+        ui.weak(format!("{weight:.2} kg"))
+            .on_hover_text(names.text("Game item weight").to_string());
     }
     r.on_hover_ui(|ui| {
         ui.strong(names.item(id));
@@ -502,19 +507,39 @@ fn details(
             },
         ));
     }
+    let weights = model::item_weights(data, index, stats);
     if let Some(item_stats) = stats.get(&id) {
-        ui.weak(format!(
-            "{} {:.2} kg{}{}",
-            names.text("Weight:"),
-            item_stats
-                .total_weight(item.get("condition").and_then(Value::as_f64).unwrap_or(1.0) as f32),
-            item_stats.armor.map_or(String::new(), |value| {
-                format!(" · {}: {value:.2}", names.text("armor"))
-            }),
-            item_stats.insulation.map_or(String::new(), |value| {
-                format!(" · {}: {value:.2}", names.text("insulation"))
-            }),
-        ));
+        if let Some(game_weight) = weights.game {
+            ui.weak(format!(
+                "{} {:.2} kg{}{}",
+                names.text("Game item weight:"),
+                game_weight,
+                item_stats.armor.map_or(String::new(), |value| {
+                    format!(" · {}: {value:.2}", names.text("armor"))
+                }),
+                item_stats.insulation.map_or(String::new(), |value| {
+                    format!(" · {}: {value:.2}", names.text("insulation"))
+                }),
+            ));
+        } else {
+            ui.colored_label(
+                colors::WARN,
+                names.text("Item weight unavailable.").to_string(),
+            );
+        }
+        if item_stats.liquid_capacity.is_some() {
+            if let (Some(liquid), Some(physical)) = (weights.liquid, weights.physical) {
+                ui.weak(format!(
+                    "{} ≈{:.2} kg · {} ≈{liquid:.2} kg · {} ≈{physical:.2} kg",
+                    names.text("Empty container:"),
+                    item_stats.total_weight(0.0),
+                    names.text("Liquid:"),
+                    names.text("Physical weight:"),
+                )).on_hover_text(names.text("Approximation: liquids use 1 kg per litre; empty container weight is inferred from the game's minimum item weight. Container encumbrance modifiers do not apply.").to_string());
+            } else {
+                ui.colored_label(colors::WARN, names.text("Liquid contents are missing or invalid; weight estimates are incomplete.").to_string());
+            }
+        }
     } else {
         ui.colored_label(
             colors::WARN,
@@ -1147,6 +1172,7 @@ mod tests {
                 armor: None,
                 insulation: None,
                 container_encumbrance: None,
+                liquid_capacity: None,
             },
         )]);
         assert_eq!(item_wear_slot(item.id, &stats), None);
@@ -1171,6 +1197,7 @@ mod tests {
                 armor: None,
                 insulation: None,
                 container_encumbrance: None,
+                liquid_capacity: None,
             },
         )]);
 

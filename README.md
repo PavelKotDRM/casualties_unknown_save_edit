@@ -23,7 +23,7 @@ Other features:
 - **Import / export** a pretty-printed, human-readable JSON copy (*File → Export JSON…* / *Import JSON…*).
 - **Real item, liquid and setting names** in any game language. These are read from the game's `Lang/*.json` files when the game folder is found. Choose the language and the folder in the *Game data* menu.
 - **Game-synced item stats.** Select the installation folder from *Game data → Set game folder…* (or use automatic detection) to read item definitions from `Assembly-CSharp.dll` and container multipliers from Unity assets. Extraction reads metadata and IL without executing game code; the Unity asset layout currently supports the game's 2022 serialization format. A sync error is shown if the game data cannot be read.
-- **English and Russian interface.** Choose *Game data → Interface language*; this preference is saved separately from the language used for in-game names.
+- **Extensible interface languages.** English and Russian are built in; additional JSON language packs can be loaded without rebuilding. Choose *Game data → Interface language* independently of the language used for in-game names.
 
 ## Building
 
@@ -39,7 +39,7 @@ The executable is `target/release/cu_save_editor.exe`. API documentation is avai
 
 1. In the game, use **Save & Quit**. The game deletes `save.sv` as soon as a run is loaded, so only edit the save while the game is not running a loaded run.
 2. Start the editor. It opens the default save automatically:
-   `C:\Users\<user>\AppData\LocalLow\Orsoniks\CasualtiesUnknown\save.sv`.
+   `%USERPROFILE%\AppData\LocalLow\Orsoniks\CasualtiesUnknown\save.sv`.
    You can also pass a path on the command line or use *File → Open…* (Ctrl+O).
 3. Edit, then press **Save** (Ctrl+S).
 4. Load the run in the game.
@@ -48,6 +48,34 @@ Editor settings (game folder, game-name language, and interface language) are st
 
 Item weights and supported wearable slots come from the installed game rather than the editor's fallback catalogue. Carrying capacity is computed from the saved body state and run settings; when stats are missing, the UI marks the estimate incomplete instead of claiming the character is under capacity.
 
+Inventory shows two different totals. **Game load** follows the game's item
+weights and storage multipliers. For liquid items, the game updates the item's
+condition from the total liquid volume divided by capacity and scales its
+weight accordingly. **Physical weight** is a separate approximation: liquids
+are treated as 1 kg per litre (regardless of type), and empty container weight
+is inferred from the game's minimum item weight. This estimate does not apply
+storage multipliers and is not the game's encumbrance value. Missing or invalid
+liquid component data is marked incomplete rather than assumed empty; the game
+may use default contents when component data is absent.
+
+## Interface language packs
+
+Put UTF-8 `.json` files in `%APPDATA%\cu_save_editor\languages` on Windows
+(on other platforms, in the `cu_save_editor/languages` folder under the OS
+configuration directory). Create the folder if necessary. See
+[`examples/interface-language.json`](examples/interface-language.json) for the format.
+Each pack needs a unique `code`, a display `name`, and a `translations` object
+mapping exact English interface strings to translated strings. Codes may contain
+ASCII letters, digits and hyphens; `en` and `ru` are reserved. Keep placeholders
+such as `{level}` unchanged. Missing or empty translations fall back to English.
+The built-in [translation table](src/ui/interface_language.rs) lists many
+available source strings; game-provided item and setting names are separate.
+
+Restart the editor or use *Game data → Reload interface languages*, then select
+the language in the same menu. Invalid files and duplicate codes are reported
+in the status bar; valid packs remain available. If a selected pack is missing,
+English is used until the pack is restored.
+
 ## Project layout
 
 - `src/save.rs`: reading/writing (gzip or plain JSON), validation, backups.
@@ -55,8 +83,9 @@ Item weights and supported wearable slots come from the installed game rather th
 - `src/schema.rs`, `src/catalog.rs`: field metadata and the game's fallback item / liquid / setting catalogue.
 - `src/game_data.rs`: game installation sync using `dotscope` metadata/IL parsing and `unity-rs-core` asset reading.
 - `src/model.rs`: game-accurate operations (healing, skill levels, inventory grouping).
-- `src/locale.rs`: game installation discovery and language files.
-- `src/ui/`: the egui views. `src/app.rs` is the application shell.
+- `src/locale.rs`: game installation discovery and game language files.
+- `src/interface_packs.rs`, `src/ui/interface_language.rs`: external and built-in interface translations.
+- `src/ui/`: the egui views. `src/app.rs` and `src/app/view.rs` form the application shell.
 
 ## Testing
 
@@ -65,3 +94,5 @@ cargo test
 ```
 
 `tests/real_save.rs` round-trips the example save in `Exemple/save.sv`, if it is present.
+To also verify liquid item metadata against an installed game, set
+`CU_GAME_DIR` to the game installation directory before running `cargo test`.

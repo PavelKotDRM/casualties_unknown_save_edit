@@ -18,13 +18,15 @@ pub struct ItemStats {
     pub armor: Option<f32>,
     pub insulation: Option<f32>,
     pub container_encumbrance: Option<f32>,
+    /// Capacity in millilitres for game-defined liquid items.
+    pub liquid_capacity: Option<f32>,
 }
 
 impl ItemStats {
     /// Weight after applying the game's condition scaling, when enabled.
     pub fn total_weight(&self, condition: f32) -> f32 {
         if self.scale_weight_with_condition {
-            self.weight * (0.1 + 0.9 * condition.clamp(0.0, 1.0))
+            0.1 + (self.weight - 0.1) * condition.clamp(0.0, 1.0)
         } else {
             self.weight
         }
@@ -64,7 +66,7 @@ fn parse_item_definitions(assembly: &CilObject) -> Result<HashMap<String, ItemSt
         }
     }
 
-    let constructors: HashSet<_> = assembly
+    let constructors: HashMap<_, _> = assembly
         .methods()
         .iter()
         .filter_map(|entry| {
@@ -73,7 +75,8 @@ fn parse_item_definitions(assembly: &CilObject) -> Result<HashMap<String, ItemSt
                 .declaring_type
                 .get()
                 .and_then(|reference| reference.upgrade())?;
-            (owner.name == "ItemInfo" && method.name == ".ctor").then_some(method.token.value())
+            (matches!(owner.name.as_str(), "ItemInfo" | "LiquidItemInfo") && method.name == ".ctor")
+                .then_some((method.token.value(), owner.name == "LiquidItemInfo"))
         })
         .collect();
 
@@ -90,16 +93,20 @@ fn parse_item_definitions(assembly: &CilObject) -> Result<HashMap<String, ItemSt
         let instructions: Vec<_> = method.instructions().collect();
         let mut current_id: Option<String> = None;
         let mut items: BTreeMap<String, HashMap<String, StaticValue>> = BTreeMap::new();
+        let mut liquid_items = HashSet::new();
 
         for (index, instruction) in instructions.iter().enumerate() {
             if instruction.mnemonic == "newobj"
                 && let Operand::Token(token) = &instruction.operand
-                && constructors.contains(&token.value())
+                && let Some(is_liquid) = constructors.get(&token.value())
                 && let Some(previous) = index.checked_sub(1).and_then(|i| instructions.get(i))
                 && previous.mnemonic == "ldstr"
                 && let Some(id) = instruction_string(previous, strings)
             {
                 current_id = Some(id.clone());
+                if *is_liquid {
+                    liquid_items.insert(id.clone());
+                }
                 items.entry(id).or_default();
             }
 
@@ -112,7 +119,7 @@ fn parse_item_definitions(assembly: &CilObject) -> Result<HashMap<String, ItemSt
             let Some((owner, field)) = field_names.get(&token.value()) else {
                 continue;
             };
-            if owner != "ItemInfo" {
+            if owner != "ItemInfo" && owner != "LiquidItemInfo" {
                 continue;
             }
             let (Some(id), Some(previous)) = (
@@ -128,10 +135,11 @@ fn parse_item_definitions(assembly: &CilObject) -> Result<HashMap<String, ItemSt
                     .insert(field.clone(), value);
             }
         }
-        parsed_items = Some(items);
+        parsed_items = Some((items, liquid_items));
         break;
     }
-    let items = parsed_items.ok_or("Assembly-CSharp.dll has no Item.SetupItems method")?;
+    let (items, liquid_items) =
+        parsed_items.ok_or("Assembly-CSharp.dll has no Item.SetupItems method")?;
 
     if items.is_empty() {
         return Err("Item.SetupItems contained no item definitions".to_owned());
@@ -152,6 +160,15 @@ fn parse_item_definitions(assembly: &CilObject) -> Result<HashMap<String, ItemSt
             if wearable && wear_slot.is_none() {
                 return Err(format!("Wearable item {id:?} has no wear slot"));
             }
+            let liquid_capacity = if liquid_items.contains(&id) {
+                Some(
+                    number_field(&fields, "capacity")
+                        .filter(|value| value.is_finite() && *value > 0.0)
+                        .ok_or_else(|| format!("Liquid item {id:?} has no valid capacity"))?,
+                )
+            } else {
+                None
+            };
             Ok((
                 id,
                 ItemStats {
@@ -164,6 +181,7 @@ fn parse_item_definitions(assembly: &CilObject) -> Result<HashMap<String, ItemSt
                     armor: number_field(&fields, "wearableArmor"),
                     insulation: number_field(&fields, "wearableIsolation"),
                     container_encumbrance: None,
+                    liquid_capacity,
                 },
             ))
         })
@@ -384,14 +402,15 @@ mod tests {
             armor: None,
             insulation: None,
             container_encumbrance: None,
+            liquid_capacity: None,
         }
     }
 
     #[test]
     fn item_weight_applies_condition_scaling_only_when_defined() {
         let scaled = item_stats(true);
-        assert!((scaled.total_weight(0.0) - 0.2).abs() < f32::EPSILON);
-        assert!((scaled.total_weight(0.5) - 1.1).abs() < f32::EPSILON);
+        assert!((scaled.total_weight(0.0) - 0.1).abs() < f32::EPSILON);
+        assert!((scaled.total_weight(0.5) - 1.05).abs() < f32::EPSILON);
         assert_eq!(scaled.total_weight(2.0), 2.0);
         assert_eq!(item_stats(false).total_weight(0.0), 2.0);
     }

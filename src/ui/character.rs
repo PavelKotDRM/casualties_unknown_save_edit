@@ -137,7 +137,7 @@ fn skill_row(
             [LABEL_WIDTH, 22.0],
             egui::Label::new(RichText::new(format!("{} ({key})", names.skill(def))).strong()),
         )
-        .on_hover_text(def.help);
+        .on_hover_text(names.text(def.help).to_string());
         ui.label(names.text("Level").to_string());
         let mut new_level = level;
         if ui
@@ -172,17 +172,12 @@ fn skill_row(
                 )),
         )
         .on_hover_text(
-            if names.interface_language == super::InterfaceLanguage::Russian {
-                format!(
-                    "Уровень {level}: {min:.0} опыта, уровень {}: {max:.0} опыта",
-                    level + 1
-                )
-            } else {
-                format!(
-                    "Level {level}: {min:.0} XP, level {}: {max:.0} XP",
-                    level + 1
-                )
-            },
+            names
+                .text("Level {level}: {min} XP, level {next}: {max} XP")
+                .replace("{level}", &level.to_string())
+                .replace("{min}", &format!("{min:.0}"))
+                .replace("{next}", &(level + 1).to_string())
+                .replace("{max}", &format!("{max:.0}")),
         );
     });
     ui.horizontal(|ui| {
@@ -200,7 +195,11 @@ fn skill_row(
                         .speed(1.0)
                         .max_decimals(2),
                 )
-                .on_hover_text("Experience within the current level")
+                .on_hover_text(
+                    names
+                        .text("Experience within the current level")
+                        .to_string(),
+                )
                 .changed()
             {
                 crate::json::set_number_preserving(slot, v);

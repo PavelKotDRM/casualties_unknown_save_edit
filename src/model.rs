@@ -77,6 +77,108 @@ pub struct CarryLoad {
     pub complete: bool,
 }
 
+/// Weights for one item. The physical weight is an approximation, not a game stat.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ItemWeights {
+    pub game: Option<f32>,
+    pub game_complete: bool,
+    pub physical: Option<f32>,
+    pub liquid: Option<f32>,
+}
+
+/// Estimated total physical weight, without the game's container modifiers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PhysicalLoad {
+    pub weight: f32,
+    pub complete: bool,
+}
+
+/// Compute game and estimated physical weights from the item and its saved components.
+pub fn item_weights(data: &Value, index: usize, stats: &HashMap<String, ItemStats>) -> ItemWeights {
+    let unknown = ItemWeights {
+        game: None,
+        game_complete: false,
+        physical: None,
+        liquid: None,
+    };
+    let Some(item) = items(data).get(index) else {
+        return unknown;
+    };
+    let Some(item_stats) = item
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|id| stats.get(id))
+    else {
+        return unknown;
+    };
+    let Some(capacity) = item_stats.liquid_capacity else {
+        let weight = item_stats.total_weight(item_condition(item));
+        return ItemWeights {
+            game: Some(weight),
+            game_complete: true,
+            physical: Some(weight),
+            liquid: None,
+        };
+    };
+    if !capacity.is_finite() || capacity <= 0.0 {
+        return unknown;
+    }
+
+    let volume = data
+        .get("itemComponents")
+        .and_then(Value::as_array)
+        .and_then(|components| components.get(index))
+        .and_then(Value::as_object)
+        .and_then(|components| {
+            let mut matching = components.iter().filter(|(key, _)| {
+                key.split(',')
+                    .next()
+                    .is_some_and(|name| name.trim() == "WaterContainerItem")
+            });
+            let (_, component) = matching.next()?;
+            if matching.next().is_some() {
+                return None;
+            }
+            let stack = component.get("stack")?.as_array()?;
+            stack.iter().try_fold(0.0_f64, |total, entry| {
+                let amount = entry.get("amount")?.as_f64()?;
+                (amount.is_finite() && amount >= 0.0).then_some(total + amount)
+            })
+        })
+        .filter(|volume| volume.is_finite() && *volume <= f32::MAX as f64)
+        .map(|volume| volume as f32);
+    let Some(volume) = volume else {
+        return ItemWeights {
+            game: Some(item_stats.total_weight(item_condition(item))),
+            ..unknown
+        };
+    };
+    let liquid_weight = volume / 1000.0;
+    let game = item_stats.total_weight(volume / capacity);
+    let physical = item_stats.total_weight(0.0) + liquid_weight;
+    ItemWeights {
+        game: game.is_finite().then_some(game),
+        game_complete: game.is_finite(),
+        physical: physical.is_finite().then_some(physical),
+        liquid: liquid_weight.is_finite().then_some(liquid_weight),
+    }
+}
+
+/// Sum physical item estimates independently of carrying-capacity data.
+pub fn physical_load(data: &Value, stats: &HashMap<String, ItemStats>) -> PhysicalLoad {
+    let mut load = PhysicalLoad {
+        weight: 0.0,
+        complete: data.get("items").is_some_and(Value::is_array),
+    };
+    for index in 0..items(data).len() {
+        match item_weights(data, index, stats).physical {
+            Some(weight) if (load.weight + weight).is_finite() => load.weight += weight,
+            _ => load.complete = false,
+        }
+    }
+    load
+}
+
 const DEFAULT_ENCUMBRANCE_CAP: f64 = 1.0;
 
 /// Computes the game's encumbrance value from equipped items, container
@@ -114,7 +216,7 @@ pub fn carry_load(data: &Value, stats: &HashMap<String, ItemStats>) -> Option<Ca
 
     let all = items(data);
     let mut weight = 0.0;
-    let mut complete = true;
+    let mut complete = data.get("items").is_some_and(Value::is_array);
     for group in group_items(data) {
         let Some(&root_index) = group.indices.first() else {
             continue;
@@ -125,7 +227,11 @@ pub fn carry_load(data: &Value, stats: &HashMap<String, ItemStats>) -> Option<Ca
             complete = false;
             continue;
         };
-        weight += root_stats.total_weight(item_condition(root));
+        let root_weight = item_weights(data, root_index, stats);
+        complete &= root_weight.game_complete;
+        if let Some(value) = root_weight.game {
+            weight += value;
+        }
         if group.indices.len() <= 1 {
             continue;
         }
@@ -139,11 +245,15 @@ pub fn carry_load(data: &Value, stats: &HashMap<String, ItemStats>) -> Option<Ca
                 continue;
             };
             let id = item.get("id").and_then(Value::as_str).unwrap_or("");
-            let Some(item_stats) = stats.get(id) else {
+            if !stats.contains_key(id) {
                 complete = false;
                 continue;
-            };
-            weight += item_stats.total_weight(item_condition(item)) * multiplier;
+            }
+            let item_weight = item_weights(data, index, stats);
+            complete &= item_weight.game_complete;
+            if let Some(value) = item_weight.game {
+                weight += value * multiplier;
+            }
         }
     }
     weight.is_finite().then_some(CarryLoad {
@@ -475,6 +585,7 @@ mod tests {
             armor: None,
             insulation: None,
             container_encumbrance,
+            liquid_capacity: None,
         }
     }
 
@@ -527,6 +638,67 @@ mod tests {
         let load = carry_load(&data, &HashMap::new()).unwrap();
         assert_eq!(load.weight, 0.0);
         assert!(!load.complete);
+    }
+
+    #[test]
+    fn liquid_weight_uses_volume_and_keeps_game_and_physical_load_separate() {
+        let data = json!({
+            "body": {"weightOffset": 0.0, "sicknessAmount": 0.0, "hunger": 100.0,
+                     "thirst": 100.0, "skills": {"STRFrom10": 4.0, "RESFrom10": 2.0}},
+            "items": [
+                {"id": "bag", "slot": 0},
+                {"id": "bottle", "slot": 0, "condition": 1.0}
+            ],
+            "itemComponents": [{}, {"WaterContainerItem, Assembly-CSharp, Version=0.0.0.0": {"stack": [
+                {"liquidId": "water", "amount": 100.0},
+                {"liquidId": "other", "amount": 60.0}
+            ]}}]
+        });
+        let mut bottle = item_stats(1.25, None);
+        bottle.scale_weight_with_condition = true;
+        bottle.liquid_capacity = Some(500.0);
+        let stats = HashMap::from([
+            ("bag".to_owned(), item_stats(2.0, Some(0.25))),
+            ("bottle".to_owned(), bottle),
+        ]);
+        let weights = item_weights(&data, 1, &stats);
+        assert!((weights.game.unwrap() - 0.468).abs() < 0.00001);
+        assert!((weights.physical.unwrap() - 0.26).abs() < 0.00001);
+        assert!((weights.liquid.unwrap() - 0.16).abs() < 0.00001);
+        let game = carry_load(&data, &stats).unwrap();
+        assert!((game.weight - 2.117).abs() < 0.00001);
+        assert!(game.complete);
+        let physical = physical_load(&data, &stats);
+        assert!((physical.weight - 2.26).abs() < 0.00001);
+        assert!(physical.complete);
+    }
+
+    #[test]
+    fn empty_overfilled_and_invalid_liquid_data_are_handled() {
+        let mut bottle = item_stats(1.25, None);
+        bottle.scale_weight_with_condition = true;
+        bottle.liquid_capacity = Some(500.0);
+        let stats = HashMap::from([("bottle".to_owned(), bottle)]);
+        let mut data = json!({
+            "items": [{"id": "bottle", "slot": 0, "condition": 0.4}],
+            "itemComponents": [{"WaterContainerItem": {"stack": []}}]
+        });
+        let empty = item_weights(&data, 0, &stats);
+        assert!((empty.game.unwrap() - 0.1).abs() < 0.00001);
+        assert!((empty.physical.unwrap() - 0.1).abs() < 0.00001);
+        data["itemComponents"][0]["WaterContainerItem"]["stack"] = json!([{"amount": 750.0}]);
+        let overfilled = item_weights(&data, 0, &stats);
+        assert_eq!(overfilled.game, Some(1.25));
+        assert!((overfilled.physical.unwrap() - 0.85).abs() < 0.00001);
+        data["itemComponents"][0]["WaterContainerItem"]["stack"] = json!([{"amount": -1}]);
+        let invalid = item_weights(&data, 0, &stats);
+        assert!(!invalid.game_complete);
+        assert!(invalid.physical.is_none());
+        assert!(!physical_load(&data, &stats).complete);
+        data["itemComponents"] = json!([{}]);
+        assert!(!item_weights(&data, 0, &stats).game_complete);
+        assert!(!physical_load(&data, &stats).complete);
+        assert!(!physical_load(&json!({}), &stats).complete);
     }
 
     #[test]

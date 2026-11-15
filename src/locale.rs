@@ -135,7 +135,7 @@ pub fn detect_game_dir(save_dir: Option<&Path>) -> Option<PathBuf> {
 /// Extracts the installation directory from `Player.log` / `Player-prev.log`.
 ///
 /// Unity writes a line like
-/// `Mono path[0] = 'D:/Steam/steamapps/common/Casualties Unknown/CasualtiesUnknown_Data/Managed'`.
+/// `Mono path[0] = '<game directory>/CasualtiesUnknown_Data/Managed'`.
 fn game_dir_from_player_log(save_dir: &Path) -> Option<PathBuf> {
     ["Player.log", "Player-prev.log"].iter().find_map(|name| {
         let log = fs::read(save_dir.join(name)).ok()?;
@@ -152,8 +152,11 @@ fn game_dir_from_player_log(save_dir: &Path) -> Option<PathBuf> {
 /// Steam library roots from the default Steam install's `libraryfolders.vdf`.
 fn steam_library_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    for steam in [r"C:\Program Files (x86)\Steam", r"C:\Program Files\Steam"] {
-        let steam = PathBuf::from(steam);
+    for steam in ["ProgramFiles(x86)", "ProgramFiles"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(|dir| PathBuf::from(dir).join("Steam"))
+    {
         let vdf = steam.join("steamapps").join("libraryfolders.vdf");
         if let Ok(text) = fs::read_to_string(&vdf) {
             roots.extend(parse_vdf_paths(&text));
@@ -163,7 +166,7 @@ fn steam_library_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Extracts `"path"  "X:\\..."` values from a `libraryfolders.vdf` file.
+/// Extracts `"path"` values from a `libraryfolders.vdf` file.
 fn parse_vdf_paths(text: &str) -> Vec<PathBuf> {
     text.lines()
         .filter_map(|line| {
@@ -182,10 +185,10 @@ mod tests {
 
     #[test]
     fn parses_library_paths() {
-        let vdf = "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"D:\\\\SteamLibrary\"\n\t\t\"label\"\t\t\"\"\n\t}\n}";
+        let vdf = "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"SteamLibrary\\\\Games\"\n\t\t\"label\"\t\t\"\"\n\t}\n}";
         assert_eq!(
             parse_vdf_paths(vdf),
-            vec![PathBuf::from(r"D:\SteamLibrary")]
+            vec![PathBuf::from(r"SteamLibrary\Games")]
         );
     }
 
