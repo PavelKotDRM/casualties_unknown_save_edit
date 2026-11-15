@@ -60,7 +60,7 @@ pub(super) fn details(
     if let Some(item_stats) = stats.get(&id) {
         if let Some(game_weight) = weights.game {
             ui.weak(format!(
-                "{} {:.2} kg{}{}",
+                "{} {:.2} u{}{}",
                 names.text("Game item weight:"),
                 game_weight,
                 item_stats.armor.map_or(String::new(), |value| {
@@ -76,6 +76,22 @@ pub(super) fn details(
                 names.text("Item weight unavailable.").to_string(),
             );
         }
+        if let (Some(capacity), Some(max_item_weight), Some(multiplier)) = (
+            item_stats.container_capacity,
+            item_stats.container_max_item_weight,
+            item_stats.container_encumbrance,
+        ) {
+            ui.weak(format!(
+                "{} {:.2} u · {} {:.2} u · {} {:.0}%",
+                names.text("Capacity:"),
+                capacity,
+                names.text("Max weight/item:"),
+                max_item_weight,
+                names.text("Encumbrance reduction:"),
+                (1.0 - multiplier) * 100.0,
+            ))
+            .on_hover_text(names.text("Capacity and per-item weight limit what the game can store. Existing contents are still counted; the encumbrance reduction changes their contribution to carried load.").to_string());
+        }
         if item_stats.liquid_capacity.is_some() {
             if let (Some(liquid), Some(physical)) = (weights.liquid, weights.physical) {
                 ui.weak(format!(
@@ -84,7 +100,7 @@ pub(super) fn details(
                     item_stats.total_weight(0.0),
                     names.text("Liquid:"),
                     names.text("Physical weight:"),
-                )).on_hover_text(names.text("Approximation: liquids use 1 kg per litre; empty container weight is inferred from the game's minimum item weight. Container encumbrance modifiers do not apply.").to_string());
+                )).on_hover_text(names.text("Approximation: liquids use 1 kg per litre; game weight units are treated as kg for empty item weight. Container encumbrance modifiers do not apply.").to_string());
             } else {
                 ui.colored_label(colors::WARN, names.text("Liquid contents are missing or invalid; weight estimates are incomplete.").to_string());
             }

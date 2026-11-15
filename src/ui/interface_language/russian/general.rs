@@ -3,9 +3,17 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Game load" => Some("Нагрузка в игре"),
         "Game item weight" => Some("Вес предмета в игре"),
         "Game item weight:" => Some("Вес предмета в игре:"),
-        "Game load uses item weights and container encumbrance multipliers. Liquid containers scale with their fill level." => {
+        "Game load is shown in game units (u). Container capacity and per-item limits determine what can be stored; the encumbrance multiplier reduces the contribution of stored items. Liquid containers scale with their fill level." => {
             Some(
-                "Игровая нагрузка учитывает вес предметов и коэффициенты контейнеров. Вес ёмкостей зависит от их наполненности.",
+                "Игровая нагрузка отображается в игровых единицах (u). Вместимость и лимит веса предмета определяют, что можно хранить; коэффициент контейнера уменьшает вклад содержимого. Вес ёмкостей зависит от их наполненности.",
+            )
+        }
+        "Capacity:" => Some("Вместимость:"),
+        "Max weight/item:" => Some("Макс. вес предмета:"),
+        "Encumbrance reduction:" => Some("Снижение нагрузки:"),
+        "Capacity and per-item weight limit what the game can store. Existing contents are still counted; the encumbrance reduction changes their contribution to carried load." => {
+            Some(
+                "Вместимость и лимит веса предмета ограничивают допустимое содержимое. Уже сохранённые предметы всё равно учитываются; снижение нагрузки меняет их вклад в общий вес.",
             )
         }
         "Incomplete: item, container or liquid data is unavailable." => {
@@ -20,9 +28,9 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Liquid contents are missing or invalid; weight estimates are incomplete." => {
             Some("Состав жидкости отсутствует или некорректен; расчёт веса неполный.")
         }
-        "Approximation: liquids use 1 kg per litre; empty container weight is inferred from the game's minimum item weight. Container encumbrance modifiers do not apply." => {
+        "Approximation: liquids use 1 kg per litre; game weight units are treated as kg for empty item weight. Container encumbrance modifiers do not apply." => {
             Some(
-                "Приблизительно: для жидкостей используется 1 кг на литр; вес пустой ёмкости оценивается по минимальному игровому весу предмета. Коэффициенты контейнеров не применяются.",
+                "Приблизительно: для жидкостей используется 1 кг на литр; игровые единицы веса для пустых предметов условно считаются килограммами. Коэффициенты контейнеров не применяются.",
             )
         }
         "Level {level}: {min} XP, level {next}: {max} XP" => {

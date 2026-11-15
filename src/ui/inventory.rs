@@ -190,12 +190,12 @@ pub fn show(
             ui.colored_label(
                 color,
                 format!(
-                    "{}: {:.1} / {:.1} kg",
+                    "{}: {:.1} / {:.1} u",
                     names.text("Game load"),
                     load.weight,
                     load.capacity
                 ),
-            ).on_hover_text(names.text("Game load uses item weights and container encumbrance multipliers. Liquid containers scale with their fill level.").to_string());
+            ).on_hover_text(names.text("Game load is shown in game units (u). Container capacity and per-item limits determine what can be stored; the encumbrance multiplier reduces the contribution of stored items. Liquid containers scale with their fill level.").to_string());
             if !load.complete {
                 ui.colored_label(
                     colors::WARN,
@@ -219,7 +219,7 @@ pub fn show(
         let physical = model::physical_load(data, stats);
         ui.separator();
         ui.label(format!("{}: ≈{:.2} kg", names.text("Physical weight"), physical.weight))
-            .on_hover_text(names.text("Approximation: liquids use 1 kg per litre; empty container weight is inferred from the game's minimum item weight. Container encumbrance modifiers do not apply.").to_string());
+            .on_hover_text(names.text("Approximation: liquids use 1 kg per litre; game weight units are treated as kg for empty item weight. Container encumbrance modifiers do not apply.").to_string());
         if !physical.complete {
             ui.colored_label(colors::WARN, names.text("Physical estimate incomplete").to_string());
         }
@@ -379,7 +379,7 @@ fn item_row(ui: &mut Ui, item: &Value, names: Names, row: ItemRowState) -> Optio
         action = Some(RowAction::Select(row.index));
     }
     if let Some(weight) = row.weights.game {
-        ui.weak(format!("{weight:.2} kg"))
+        ui.weak(format!("{weight:.2} u"))
             .on_hover_text(names.text("Game item weight").to_string());
     }
     r.on_hover_ui(|ui| {
@@ -520,6 +520,8 @@ mod tests {
                 wear_slot: None,
                 armor: None,
                 insulation: None,
+                container_capacity: None,
+                container_max_item_weight: None,
                 container_encumbrance: None,
                 liquid_capacity: None,
             },
@@ -545,6 +547,8 @@ mod tests {
                 wear_slot: Some("head".to_owned()),
                 armor: None,
                 insulation: None,
+                container_capacity: None,
+                container_max_item_weight: None,
                 container_encumbrance: None,
                 liquid_capacity: None,
             },

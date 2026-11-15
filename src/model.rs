@@ -69,7 +69,7 @@ pub struct ItemGroup {
     pub indices: Vec<usize>,
 }
 
-/// Computed carrying load and capacity, with incomplete metadata flagged.
+/// Computed carrying load and capacity in game units (`u`), with incomplete metadata flagged.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CarryLoad {
     pub weight: f32,
@@ -77,7 +77,7 @@ pub struct CarryLoad {
     pub complete: bool,
 }
 
-/// Weights for one item. The physical weight is an approximation, not a game stat.
+/// Game-unit and estimated physical weights for one item. Physical weight is not a game stat.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ItemWeights {
     pub game: Option<f32>,
@@ -584,6 +584,8 @@ mod tests {
             wear_slot: None,
             armor: None,
             insulation: None,
+            container_capacity: None,
+            container_max_item_weight: None,
             container_encumbrance,
             liquid_capacity: None,
         }

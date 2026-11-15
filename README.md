@@ -22,7 +22,7 @@ Other features:
 - **Undo / redo** (Ctrl+Z / Ctrl+Y). Unsaved changes are protected when you open another file or close the window.
 - **Import / export** a pretty-printed, human-readable JSON copy (*File → Export JSON…* / *Import JSON…*).
 - **Real item, liquid and setting names** in any game language. These are read from the game's `Lang/*.json` files when the game folder is found. Choose the language and the folder in the *Game data* menu.
-- **Game-synced item stats.** Select the installation folder from *Game data → Set game folder…* (or use automatic detection) to read item definitions from `Assembly-CSharp.dll` and container multipliers from Unity assets. Extraction reads metadata and IL without executing game code; the Unity asset layout currently supports the game's 2022 serialization format. A sync error is shown if the game data cannot be read.
+- **Game-synced item stats.** Select the installation folder from *Game data → Set game folder…* (or use automatic detection) to read item definitions from `Assembly-CSharp.dll` and container limits and encumbrance multipliers from Unity assets. Extraction reads metadata and IL without executing game code; the Unity asset layout currently supports the game's 2022 serialization format. A sync error is shown if the game data cannot be read.
 - **Extensible interface languages.** English and Russian are built in; additional JSON language packs can be loaded without rebuilding. Choose *Game data → Interface language* independently of the language used for in-game names.
 
 ## Building
@@ -48,15 +48,18 @@ Editor settings (game folder, game-name language, and interface language) are st
 
 Item weights and supported wearable slots come from the installed game rather than the editor's fallback catalogue. Carrying capacity is computed from the saved body state and run settings; when stats are missing, the UI marks the estimate incomplete instead of claiming the character is under capacity.
 
-Inventory shows two different totals. **Game load** follows the game's item
-weights and storage multipliers. For liquid items, the game updates the item's
-condition from the total liquid volume divided by capacity and scales its
-weight accordingly. **Physical weight** is a separate approximation: liquids
-are treated as 1 kg per litre (regardless of type), and empty container weight
-is inferred from the game's minimum item weight. This estimate does not apply
-storage multipliers and is not the game's encumbrance value. Missing or invalid
-liquid component data is marked incomplete rather than assumed empty; the game
-may use default contents when component data is absent.
+Inventory shows two different totals. **Game load** is shown in the game's
+weight units (`u`): item weights are combined with container encumbrance
+multipliers, and liquid items scale with their fill level. Container capacity
+and maximum item weight are storage limits; they do not clamp the carried
+weight of contents already present in a save. These limits and the encumbrance
+reduction are shown in each container's details. **Physical weight** is a
+separate rough approximation: liquids are treated as 1 kg per litre (regardless
+of type), and game weight units are treated as kilograms for empty item weight.
+This estimate does not apply storage multipliers and is not the game's
+encumbrance value. Missing or invalid liquid component data is marked
+incomplete rather than assumed empty; the game may use default contents when
+component data is absent.
 
 ## Interface language packs
 

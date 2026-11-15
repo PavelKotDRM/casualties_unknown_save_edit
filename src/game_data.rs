@@ -11,19 +11,32 @@ use unity_rs_core::studio::Studio;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ItemStats {
     pub category: String,
+    /// Base item weight in the game's `u` units.
     pub weight: f32,
     pub scale_weight_with_condition: bool,
     pub wearable: bool,
     pub wear_slot: Option<String>,
     pub armor: Option<f32>,
     pub insulation: Option<f32>,
+    /// Maximum total contained item weight, in game units.
+    pub container_capacity: Option<f32>,
+    /// Maximum weight of one stored item, in game units.
+    pub container_max_item_weight: Option<f32>,
+    /// Fraction of stored item weight added to the carried load.
     pub container_encumbrance: Option<f32>,
     /// Capacity in millilitres for game-defined liquid items.
     pub liquid_capacity: Option<f32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ContainerMetadata {
+    capacity: f32,
+    max_item_weight: f32,
+    encumbrance_multiplier: f32,
+}
+
 impl ItemStats {
-    /// Weight after applying the game's condition scaling, when enabled.
+    /// Weight in game units after applying condition scaling, when enabled.
     pub fn total_weight(&self, condition: f32) -> f32 {
         if self.scale_weight_with_condition {
             0.1 + (self.weight - 0.1) * condition.clamp(0.0, 1.0)
@@ -47,10 +60,12 @@ pub fn load_item_stats(game_dir: &Path) -> Result<HashMap<String, ItemStats>, St
         CilObject::from_path_with_validation(&assembly_path, ValidationConfig::minimal())
             .map_err(|error| format!("Cannot parse {}: {error}", assembly_path.display()))?;
     let mut stats = parse_item_definitions(&assembly)?;
-    let multipliers = parse_container_multipliers(&data_dir)?;
-    for (id, multiplier) in multipliers {
+    let containers = parse_container_metadata(&data_dir)?;
+    for (id, container) in containers {
         if let Some(item) = stats.get_mut(&id) {
-            item.container_encumbrance = Some(multiplier);
+            item.container_capacity = Some(container.capacity);
+            item.container_max_item_weight = Some(container.max_item_weight);
+            item.container_encumbrance = Some(container.encumbrance_multiplier);
         }
     }
     Ok(stats)
@@ -180,6 +195,8 @@ fn parse_item_definitions(assembly: &CilObject) -> Result<HashMap<String, ItemSt
                     wear_slot,
                     armor: number_field(&fields, "wearableArmor"),
                     insulation: number_field(&fields, "wearableIsolation"),
+                    container_capacity: None,
+                    container_max_item_weight: None,
                     container_encumbrance: None,
                     liquid_capacity,
                 },
@@ -260,7 +277,7 @@ fn bool_field(fields: &HashMap<String, StaticValue>, key: &str) -> Option<bool> 
     }
 }
 
-fn parse_container_multipliers(data_dir: &Path) -> Result<HashMap<String, f32>, String> {
+fn parse_container_metadata(data_dir: &Path) -> Result<HashMap<String, ContainerMetadata>, String> {
     let studio = Studio::open(data_dir).map_err(|error| {
         format!(
             "Cannot read Unity assets in {}: {error}",
@@ -278,7 +295,7 @@ fn parse_container_multipliers(data_dir: &Path) -> Result<HashMap<String, f32>, 
         ));
     }
 
-    let mut multipliers = HashMap::new();
+    let mut containers = HashMap::new();
     for container in studio
         .objects()
         .filter(|object| object.class_id() == 114 && object.name() == Some("Container"))
@@ -293,9 +310,18 @@ fn parse_container_multipliers(data_dir: &Path) -> Result<HashMap<String, f32>, 
         }
         let data_offset = mono_behaviour_data_offset(&bytes)
             .ok_or_else(|| "Container component has an invalid MonoBehaviour header".to_owned())?;
-        let multiplier = read_f32(&bytes, data_offset + 8)
-            .filter(|value| value.is_finite() && *value >= 0.0)
-            .ok_or_else(|| "Container has an invalid encumbrance multiplier".to_owned())?;
+        // Unity serializes Container fields in declaration order.
+        let metadata = ContainerMetadata {
+            capacity: read_f32(&bytes, data_offset)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .ok_or_else(|| "Container has an invalid maximum weight".to_owned())?,
+            max_item_weight: read_f32(&bytes, data_offset + 4)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .ok_or_else(|| "Container has an invalid maximum item weight".to_owned())?,
+            encumbrance_multiplier: read_f32(&bytes, data_offset + 8)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+                .ok_or_else(|| "Container has an invalid encumbrance multiplier".to_owned())?,
+        };
         let game_object = studio
             .object(container.file_index(), game_object.1)
             .ok_or_else(|| "Container refers to a missing GameObject".to_owned())?;
@@ -332,16 +358,19 @@ fn parse_container_multipliers(data_dir: &Path) -> Result<HashMap<String, f32>, 
                 .ok_or_else(|| "Item component has an invalid MonoBehaviour header".to_owned())?;
             let id = read_aligned_string(&item_bytes, item_offset)
                 .ok_or_else(|| "Item component has an invalid item id".to_owned())?;
-            if let Some(previous) = multipliers.insert(id.clone(), multiplier)
-                && (previous - multiplier).abs() > f32::EPSILON
+            if let Some(previous) = containers.insert(id.clone(), metadata)
+                && ((previous.capacity - metadata.capacity).abs() > f32::EPSILON
+                    || (previous.max_item_weight - metadata.max_item_weight).abs() > f32::EPSILON
+                    || (previous.encumbrance_multiplier - metadata.encumbrance_multiplier).abs()
+                        > f32::EPSILON)
             {
                 return Err(format!(
-                    "Container metadata for item {id:?} has conflicting multipliers"
+                    "Container metadata for item {id:?} has conflicting values"
                 ));
             }
         }
     }
-    Ok(multipliers)
+    Ok(containers)
 }
 
 fn mono_behaviour_data_offset(bytes: &[u8]) -> Option<usize> {
@@ -401,6 +430,8 @@ mod tests {
             wear_slot: None,
             armor: None,
             insulation: None,
+            container_capacity: None,
+            container_max_item_weight: None,
             container_encumbrance: None,
             liquid_capacity: None,
         }

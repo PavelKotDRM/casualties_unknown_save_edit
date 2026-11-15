@@ -3,7 +3,7 @@
 use std::path::Path;
 
 #[test]
-fn liquid_item_metadata_is_loaded() {
+fn item_and_container_metadata_is_loaded() {
     let Some(game_dir) = std::env::var_os("CU_GAME_DIR") else {
         eprintln!("skipped: CU_GAME_DIR is not set");
         return;
@@ -36,6 +36,16 @@ fn liquid_item_metadata_is_loaded() {
         }
     }
     assert!(lerp_found, "game item weight no longer calls Lerp");
+    let bag = stats.get("bigpack").expect("missing container bigpack");
+    assert!(bag.container_capacity.is_some_and(|value| value > 0.0));
+    assert!(
+        bag.container_max_item_weight
+            .is_some_and(|value| value > 0.0)
+    );
+    assert!(
+        bag.container_encumbrance
+            .is_some_and(|value| value.is_finite() && value >= 0.0)
+    );
     for id in ["waterbottle", "chocolatemilk", "combatpen", "liquidpouch"] {
         let item = stats
             .get(id)
