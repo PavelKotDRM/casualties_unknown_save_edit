@@ -423,9 +423,12 @@ impl Names<'_> {
 
     /// Name of the layer the run resumes on (`biome` field).
     pub fn layer(&self, biome: i64) -> String {
-        let from_locale = self
-            .locale
-            .and_then(|l| l.other(&format!("layertitle{}", biome + 1)))
+        let from_locale = biome
+            .checked_add(1)
+            .and_then(|layer| {
+                self.locale
+                    .and_then(|locale| locale.other(&format!("layertitle{layer}")))
+            })
             .map(|s| s.replace('\n', " — "));
         from_locale
             .or_else(|| {
@@ -507,5 +510,15 @@ mod tests {
             InterfaceLanguage::Russian.text("⚠ Character is overburdened."),
             "⚠ Персонаж перегружен."
         );
+    }
+
+    #[test]
+    fn layer_lookup_handles_maximum_saved_index() {
+        let locale = Locale::from_json(r#"{"name":"English","other":{}}"#).unwrap();
+        let names = Names {
+            locale: Some(&locale),
+            interface_language: InterfaceLanguage::English,
+        };
+        assert_eq!(names.layer(i64::MAX), "Unknown layer");
     }
 }
