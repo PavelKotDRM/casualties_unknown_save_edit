@@ -1,14 +1,16 @@
 //! The egui application: menus, tabs, undo/redo, backups and file handling.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use egui::{Key, KeyboardShortcut, Modifiers, RichText, Ui};
 use serde_json::{Value, json};
 
+use crate::game_data::{self, ItemStats};
 use crate::locale::{self, LanguageFile, Locale};
 use crate::save::{self, BackupInfo, SaveError, SaveFile, SaveFormat};
-use crate::ui::{self, Names, colors};
+use crate::ui::{self, InterfaceLanguage, Names, colors};
 
 const MAX_UNDO: usize = 200;
 const CTRL_S: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
@@ -50,16 +52,17 @@ impl Tab {
     ];
 
     /// Tab title with icon.
-    pub fn title(self) -> &'static str {
-        match self {
-            Tab::Overview => "🏠 Overview",
-            Tab::Character => "🐾 Character",
-            Tab::Health => "❤ Health",
-            Tab::Limbs => "🦴 Limbs",
-            Tab::Inventory => "🎒 Inventory",
-            Tab::Run => "🗺 Run",
-            Tab::Raw => "{ } Raw JSON",
-        }
+    pub fn title(self, language: InterfaceLanguage) -> String {
+        let (icon, label) = match self {
+            Tab::Overview => ("🏠", "Overview"),
+            Tab::Character => ("🐾", "Character"),
+            Tab::Health => ("❤", "Health"),
+            Tab::Limbs => ("🦴", "Limbs"),
+            Tab::Inventory => ("🎒", "Inventory"),
+            Tab::Run => ("🗺", "Run"),
+            Tab::Raw => ("{ }", "Raw JSON"),
+        };
+        format!("{icon} {}", language.text(label))
     }
 }
 
@@ -86,6 +89,7 @@ enum Level {
 struct Config {
     game_dir: Option<PathBuf>,
     language: Option<String>,
+    interface_language: InterfaceLanguage,
 }
 
 impl Config {
@@ -103,6 +107,9 @@ impl Config {
         Self {
             game_dir: v.get("gameDir").and_then(Value::as_str).map(PathBuf::from),
             language: v.get("language").and_then(Value::as_str).map(str::to_owned),
+            interface_language: InterfaceLanguage::from_code(
+                v.get("interfaceLanguage").and_then(Value::as_str),
+            ),
         }
     }
 
@@ -111,6 +118,7 @@ impl Config {
         let v = json!({
             "gameDir": self.game_dir.as_ref().map(|p| p.to_string_lossy()),
             "language": self.language,
+            "interfaceLanguage": self.interface_language.code(),
         });
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -158,6 +166,7 @@ pub struct EditorApp {
     config: Config,
     languages: Vec<LanguageFile>,
     locale: Option<Locale>,
+    item_stats: HashMap<String, ItemStats>,
     limbs: ui::limbs::LimbsState,
     inventory: ui::inventory::InventoryState,
     raw: ui::raw::TreeState,
@@ -190,6 +199,7 @@ impl EditorApp {
             config: Config::load(),
             languages: Vec::new(),
             locale: None,
+            item_stats: HashMap::new(),
             limbs: Default::default(),
             inventory: Default::default(),
             raw: Default::default(),
@@ -231,13 +241,21 @@ impl EditorApp {
             .clone()
             .filter(|d| locale::is_game_dir(d))
             .or_else(|| locale::detect_game_dir(save::default_save_dir().as_deref()));
-        self.set_game_dir(dir);
+        if let Err(error) = self.set_game_dir(dir) {
+            self.error("Could not sync item stats", error);
+        }
     }
 
-    fn set_game_dir(&mut self, dir: Option<PathBuf>) {
+    fn set_game_dir(&mut self, dir: Option<PathBuf>) -> Result<(), String> {
         self.languages = dir
             .as_deref()
             .map(locale::list_languages)
+            .unwrap_or_default();
+        let stats = dir.as_deref().map(game_data::load_item_stats).transpose();
+        self.item_stats = stats
+            .as_ref()
+            .ok()
+            .and_then(Clone::clone)
             .unwrap_or_default();
         self.config.game_dir = dir;
         let wanted = self.config.language.clone().unwrap_or_else(|| "EN".into());
@@ -249,6 +267,7 @@ impl EditorApp {
             .or(self.languages.first())
             .cloned();
         self.set_language(lang);
+        stats.map(|_| ())
     }
 
     fn set_language(&mut self, lang: Option<LanguageFile>) {
@@ -260,6 +279,11 @@ impl EditorApp {
             }
             self.config.language = Some(l.code);
         }
+        self.config.store();
+    }
+
+    fn set_interface_language(&mut self, language: InterfaceLanguage) {
+        self.config.interface_language = language;
         self.config.store();
     }
 
@@ -593,23 +617,33 @@ impl EditorApp {
 
     fn menu_bar(&mut self, ui: &mut Ui) {
         let loaded = self.save.is_some();
+        let language = self.config.interface_language;
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("File", |ui| {
-                if ui.button("📂 Open game save").clicked() {
+            ui.menu_button(language.text("File").to_string(), |ui| {
+                if ui
+                    .button(format!("📂 {}", language.text("Open game save")))
+                    .clicked()
+                {
                     if let Some(p) = save::default_save_path() {
                         self.request(Pending::Open(p));
                     }
                     ui.close();
                 }
                 if ui
-                    .add(egui::Button::new("📂 Open…").shortcut_text("Ctrl+O"))
+                    .add(
+                        egui::Button::new(format!("📂 {}", language.text("Open…")))
+                            .shortcut_text("Ctrl+O"),
+                    )
                     .clicked()
                 {
                     self.request(Pending::OpenDialog);
                     ui.close();
                 }
                 if ui
-                    .add_enabled(loaded, egui::Button::new("⟲ Reload from disk"))
+                    .add_enabled(
+                        loaded,
+                        egui::Button::new(format!("⟲ {}", language.text("Reload from disk"))),
+                    )
                     .clicked()
                 {
                     self.request(Pending::Reload);
@@ -617,14 +651,21 @@ impl EditorApp {
                 }
                 ui.separator();
                 if ui
-                    .add_enabled(loaded, egui::Button::new("💾 Save").shortcut_text("Ctrl+S"))
+                    .add_enabled(
+                        loaded,
+                        egui::Button::new(format!("💾 {}", language.text("Save")))
+                            .shortcut_text("Ctrl+S"),
+                    )
                     .clicked()
                 {
                     self.save();
                     ui.close();
                 }
                 if ui
-                    .add_enabled(loaded, egui::Button::new("💾 Save as…"))
+                    .add_enabled(
+                        loaded,
+                        egui::Button::new(format!("💾 {}", language.text("Save as…"))),
+                    )
                     .clicked()
                 {
                     self.save_as();
@@ -632,14 +673,20 @@ impl EditorApp {
                 }
                 ui.separator();
                 if ui
-                    .add_enabled(loaded, egui::Button::new("📤 Export readable JSON…"))
+                    .add_enabled(
+                        loaded,
+                        egui::Button::new(format!("📤 {}", language.text("Export readable JSON…"))),
+                    )
                     .clicked()
                 {
                     self.export_json();
                     ui.close();
                 }
                 if ui
-                    .add_enabled(loaded, egui::Button::new("📥 Import JSON…"))
+                    .add_enabled(
+                        loaded,
+                        egui::Button::new(format!("📥 {}", language.text("Import JSON…"))),
+                    )
                     .clicked()
                 {
                     self.import_json();
@@ -647,14 +694,20 @@ impl EditorApp {
                 }
                 ui.separator();
                 if ui
-                    .add_enabled(loaded, egui::Button::new("🗄 Create backup now"))
+                    .add_enabled(
+                        loaded,
+                        egui::Button::new(format!("🗄 {}", language.text("Create backup now"))),
+                    )
                     .clicked()
                 {
                     self.manual_backup();
                     ui.close();
                 }
                 if ui
-                    .add_enabled(loaded, egui::Button::new("🗄 Backups…"))
+                    .add_enabled(
+                        loaded,
+                        egui::Button::new(format!("🗄 {}", language.text("Backups…"))),
+                    )
                     .clicked()
                 {
                     self.backups_open = true;
@@ -663,23 +716,27 @@ impl EditorApp {
                     }
                     ui.close();
                 }
-                if ui.button("📁 Open save folder").clicked() {
+                if ui
+                    .button(format!("📁 {}", language.text("Open save folder")))
+                    .clicked()
+                {
                     if let Some(d) = self.current_dir() {
                         Self::open_folder(&d);
                     }
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("🚪 Exit").clicked() {
+                if ui.button(format!("🚪 {}", language.text("Exit"))).clicked() {
                     ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
                     ui.close();
                 }
             });
-            ui.menu_button("Edit", |ui| {
+            ui.menu_button(language.text("Edit").to_string(), |ui| {
                 if ui
                     .add_enabled(
                         !self.undo.is_empty() || self.is_uncommitted(),
-                        egui::Button::new("↶ Undo").shortcut_text("Ctrl+Z"),
+                        egui::Button::new(format!("↶ {}", language.text("Undo")))
+                            .shortcut_text("Ctrl+Z"),
                     )
                     .clicked()
                 {
@@ -689,7 +746,8 @@ impl EditorApp {
                 if ui
                     .add_enabled(
                         !self.redo.is_empty(),
-                        egui::Button::new("↷ Redo").shortcut_text("Ctrl+Y"),
+                        egui::Button::new(format!("↷ {}", language.text("Redo")))
+                            .shortcut_text("Ctrl+Y"),
                     )
                     .clicked()
                 {
@@ -697,7 +755,10 @@ impl EditorApp {
                     ui.close();
                 }
                 if ui
-                    .add_enabled(self.is_dirty(), egui::Button::new("⟲ Revert all changes"))
+                    .add_enabled(
+                        self.is_dirty(),
+                        egui::Button::new(format!("⟲ {}", language.text("Revert all changes"))),
+                    )
                     .clicked()
                 {
                     self.commit();
@@ -716,20 +777,35 @@ impl EditorApp {
                                 ui.close();
                             }
                         };
-                        fix(ui, "✚ Heal all limbs", &|d| {
-                            crate::model::heal_limbs(d, false)
-                        });
-                        fix(ui, "✚ Heal + regrow limbs", &|d| {
-                            crate::model::heal_limbs(d, true)
-                        });
-                        fix(ui, "❤ Restore vitals", &crate::model::restore_vitals);
-                        fix(ui, "🍖 Fill needs", &crate::model::fill_needs);
+                        fix(
+                            ui,
+                            &format!("✚ {}", language.text("Heal all limbs")),
+                            &|d| crate::model::heal_limbs(d, false),
+                        );
+                        fix(
+                            ui,
+                            &format!("✚ {}", language.text("Heal + regrow limbs")),
+                            &|d| crate::model::heal_limbs(d, true),
+                        );
+                        fix(
+                            ui,
+                            &format!("❤ {}", language.text("Restore vitals")),
+                            &crate::model::restore_vitals,
+                        );
+                        fix(
+                            ui,
+                            &format!("🍖 {}", language.text("Fill needs")),
+                            &crate::model::fill_needs,
+                        );
                     }
                 });
             });
-            ui.menu_button("View", |ui| {
+            ui.menu_button(language.text("View").to_string(), |ui| {
                 for tab in Tab::ALL {
-                    if ui.selectable_label(self.tab == tab, tab.title()).clicked() {
+                    if ui
+                        .selectable_label(self.tab == tab, tab.title(language))
+                        .clicked()
+                    {
                         self.tab = tab;
                         ui.close();
                     }
@@ -737,13 +813,20 @@ impl EditorApp {
                 ui.separator();
                 egui::widgets::global_theme_preference_buttons(ui);
             });
-            ui.menu_button("Game data", |ui| {
+            ui.menu_button(language.text("Game data").to_string(), |ui| {
                 match &self.config.game_dir {
-                    Some(d) => ui.weak(format!("Game folder: {}", d.display())),
-                    None => ui.colored_label(colors::WARN, "Game folder not found — showing ids"),
+                    Some(d) => {
+                        ui.weak(format!("{} {}", language.text("Game folder:"), d.display()))
+                    }
+                    None => ui.colored_label(
+                        colors::WARN,
+                        language
+                            .text("Game folder not found — showing ids")
+                            .to_string(),
+                    ),
                 };
                 ui.separator();
-                ui.label("Language of names:");
+                ui.label(language.text("Language of names:").to_string());
                 let langs = self.languages.clone();
                 let current = self.config.language.clone();
                 for l in langs {
@@ -756,39 +839,74 @@ impl EditorApp {
                     }
                 }
                 ui.separator();
-                if ui.button("📁 Set game folder…").clicked() {
+                ui.label(language.text("Interface language:").to_string());
+                for (choice, label) in [
+                    (InterfaceLanguage::English, "English"),
+                    (InterfaceLanguage::Russian, "Russian"),
+                ] {
+                    if ui
+                        .selectable_label(language == choice, language.text(label).to_string())
+                        .clicked()
+                    {
+                        self.set_interface_language(choice);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui
+                    .button(format!("📁 {}", language.text("Set game folder…")))
+                    .clicked()
+                {
                     if let Some(dir) = rfd::FileDialog::new()
-                        .set_title("Casualties Unknown installation folder")
+                        .set_title(
+                            language
+                                .text("Casualties Unknown installation folder")
+                                .to_string(),
+                        )
                         .pick_folder()
                     {
                         if locale::is_game_dir(&dir) {
-                            self.set_game_dir(Some(dir));
-                            self.set_status("Game data loaded", Level::Success);
+                            match self.set_game_dir(Some(dir)) {
+                                Ok(()) => self.set_status(
+                                    language.text("Game data loaded").to_string(),
+                                    Level::Success,
+                                ),
+                                Err(error) => self.error("Could not sync item stats", error),
+                            }
                         } else {
                             self.set_status(
-                                "That folder does not contain CasualtiesUnknown_Data\\Lang",
+                                language
+                                    .text(
+                                        "That folder does not contain CasualtiesUnknown_Data\\Lang",
+                                    )
+                                    .to_string(),
                                 Level::Error,
                             );
                         }
                     }
                     ui.close();
                 }
-                if ui.button("🔍 Detect automatically").clicked() {
+                if ui
+                    .button(format!("🔍 {}", language.text("Detect automatically")))
+                    .clicked()
+                {
                     let dir = locale::detect_game_dir(save::default_save_dir().as_deref());
                     let found = dir.is_some();
-                    self.set_game_dir(dir);
-                    self.set_status(
-                        if found {
-                            "Game folder detected"
-                        } else {
-                            "Game folder not found"
-                        },
-                        if found { Level::Success } else { Level::Error },
-                    );
+                    match self.set_game_dir(dir) {
+                        Ok(()) => self.set_status(
+                            if found {
+                                language.text("Game folder detected").to_string()
+                            } else {
+                                language.text("Game folder not found").to_string()
+                            },
+                            if found { Level::Success } else { Level::Error },
+                        ),
+                        Err(error) => self.error("Could not sync item stats", error),
+                    }
                     ui.close();
                 }
             });
-            ui.menu_button("Help", |ui| {
+            ui.menu_button(language.text("Help").to_string(), |ui| {
                 if ui.button("ℹ About").clicked() {
                     self.about_open = true;
                     ui.close();
@@ -802,10 +920,11 @@ impl EditorApp {
     }
 
     fn tab_bar(&mut self, ui: &mut Ui) {
+        let language = self.config.interface_language;
         ui.horizontal(|ui| {
             for tab in Tab::ALL {
                 let selected = self.tab == tab;
-                let text = RichText::new(tab.title()).size(15.0);
+                let text = RichText::new(tab.title(language)).size(15.0);
                 if ui.add(egui::Button::selectable(selected, text)).clicked() && !selected {
                     self.tab = tab;
                     if tab == Tab::Raw && !self.raw.text_dirty {
@@ -816,15 +935,20 @@ impl EditorApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let dirty = self.is_dirty();
                 if ui
-                    .add_enabled(dirty, egui::Button::new(RichText::new("💾 Save").strong()))
-                    .on_hover_text("Write the save (Ctrl+S)")
+                    .add_enabled(
+                        dirty,
+                        egui::Button::new(
+                            RichText::new(format!("💾 {}", language.text("Save"))).strong(),
+                        ),
+                    )
+                    .on_hover_text(language.text("Write the save (Ctrl+S)").to_string())
                     .clicked()
                 {
                     self.save();
                 }
                 if ui
                     .add_enabled(!self.redo.is_empty(), egui::Button::new("↷"))
-                    .on_hover_text("Redo (Ctrl+Y)")
+                    .on_hover_text(language.text("Redo (Ctrl+Y)").to_string())
                     .clicked()
                 {
                     self.redo();
@@ -834,7 +958,7 @@ impl EditorApp {
                         !self.undo.is_empty() || self.is_uncommitted(),
                         egui::Button::new("↶"),
                     )
-                    .on_hover_text("Undo (Ctrl+Z)")
+                    .on_hover_text(language.text("Undo (Ctrl+Z)").to_string())
                     .clicked()
                 {
                     self.undo();
@@ -844,24 +968,26 @@ impl EditorApp {
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
+        let language = self.config.interface_language;
         ui.horizontal(|ui| {
             if let Some(file) = &self.save {
                 let dirty = file.data != self.clean;
                 if dirty {
-                    ui.colored_label(colors::WARN, "● modified");
+                    ui.colored_label(colors::WARN, format!("● {}", language.text("modified")));
                 } else {
-                    ui.colored_label(colors::GOOD, "✔ saved");
+                    ui.colored_label(colors::GOOD, format!("✔ {}", language.text("saved")));
                 }
                 ui.separator();
                 ui.label(RichText::new(file.path.display().to_string()).monospace())
-                    .on_hover_text("Current file");
+                    .on_hover_text(language.text("Current file").to_string());
                 ui.weak(match file.format {
                     SaveFormat::Gzip => "gzip",
                     SaveFormat::PlainJson => "plain JSON",
                 });
                 if let Some(b) = &self.last_backup {
                     ui.separator();
-                    ui.weak("backup:").on_hover_text(b.display().to_string());
+                    ui.weak(language.text("backup:").to_string())
+                        .on_hover_text(b.display().to_string());
                     ui.weak(
                         b.file_name()
                             .map_or(String::new(), |n| n.to_string_lossy().into_owned()),
@@ -883,59 +1009,67 @@ impl EditorApp {
     }
 
     fn welcome(&mut self, ui: &mut Ui) {
+        let language = self.config.interface_language;
         ui.vertical_centered(|ui| {
             ui.add_space(ui.available_height() * 0.2);
-            ui.label(RichText::new("Casualties Unknown — Save Editor").size(28.0).strong());
+            ui.label(
+                RichText::new(language.text("Casualties Unknown — Save Editor").to_string())
+                    .size(28.0)
+                    .strong(),
+            );
             ui.add_space(10.0);
             match save::default_save_path() {
                 Some(p) if p.exists() => {
-                    ui.label(format!("Save found: {}", p.display()));
-                    if ui.button(RichText::new("📂 Open game save").size(18.0)).clicked() {
+                    ui.label(format!("{} {}", language.text("Save found:"), p.display()));
+                    if ui.button(RichText::new(format!("📂 {}", language.text("Open game save"))).size(18.0)).clicked() {
                         self.open(&p);
                     }
                 }
                 Some(p) => {
-                    ui.label(format!("No save at {}", p.display()));
-                    ui.weak("The game writes save.sv on \"Save & Quit\" and deletes it when the run is loaded again.");
+                    ui.label(format!("{} {}", language.text("No save at"), p.display()));
+                    ui.weak(language.text("The game writes save.sv on \"Save & Quit\" and deletes it when the run is loaded again.").to_string());
                 }
                 None => {
-                    ui.label("Cannot determine the save folder.");
+                    ui.label(language.text("Cannot determine the save folder.").to_string());
                 }
             }
             ui.add_space(6.0);
-            if ui.button("📂 Open another file…").clicked() {
+            if ui.button(format!("📂 {}", language.text("Open another file…"))).clicked() {
                 self.open_dialog();
             }
             ui.add_space(6.0);
-            ui.weak("A timestamped backup is created in SaveEditorBackups every time a save is opened.");
+            ui.weak(language.text("A timestamped backup is created in SaveEditorBackups every time a save is opened.").to_string());
         });
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        let language = self.config.interface_language;
         if let Some(pending) = self.pending.clone() {
             let mut choice = None;
             egui::Modal::new(egui::Id::unique("confirm_discard")).show(ctx, |ui| {
                 ui.set_width(380.0);
-                ui.heading("Unsaved changes");
-                ui.label(match &pending {
-                    Pending::Close => "Save your changes before closing?",
-                    Pending::RestoreBackup(_) => {
-                        "Restoring a backup discards your unsaved changes. Save them first?"
-                    }
-                    _ => "Save your changes before continuing?",
-                });
+                ui.heading(language.text("Unsaved changes").to_string());
+                let message = match &pending {
+                    Pending::Close => language.text("Save your changes before closing?"),
+                    Pending::RestoreBackup(_) => language
+                        .text("Restoring a backup discards your unsaved changes. Save them first?"),
+                    _ => language.text("Save your changes before continuing?"),
+                };
+                ui.label(message.to_string());
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("💾 Save").clicked() {
+                    if ui.button(format!("💾 {}", language.text("Save"))).clicked() {
                         choice = Some(true);
                     }
                     if ui
-                        .button(RichText::new("Discard").color(colors::BAD))
+                        .button(
+                            RichText::new(language.text("Discard").to_string()).color(colors::BAD),
+                        )
                         .clicked()
                     {
                         choice = Some(false);
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(language.text("Cancel").to_string()).clicked() {
                         self.pending = None;
                     }
                 });
@@ -963,7 +1097,7 @@ impl EditorApp {
             let mut open = true;
             let mut restore = None;
             let mut open_backup = None;
-            egui::Window::new("🗄 Backups")
+            egui::Window::new(format!("🗄 {}", language.text("Backups")))
                 .open(&mut open)
                 .default_size([560.0, 360.0])
                 .show(ctx, |ui| {
@@ -971,17 +1105,17 @@ impl EditorApp {
                     let dir = save::backup_dir(&path);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(dir.display().to_string()).monospace());
-                        if ui.button("📁 Open folder").clicked() {
+                        if ui.button(format!("📁 {}", language.text("Open folder"))).clicked() {
                             let _ = std::fs::create_dir_all(&dir);
                             Self::open_folder(&dir);
                         }
-                        if ui.button("➕ Backup now").clicked() {
+                        if ui.button(format!("➕ {}", language.text("Backup now"))).clicked() {
                             self.manual_backup();
                         }
                     });
                     ui.separator();
                     if self.backups.is_empty() {
-                        ui.weak("No backups yet.");
+                        ui.weak(language.text("No backups yet.").to_string());
                     }
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         egui::Grid::new("backups").striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
@@ -993,10 +1127,10 @@ impl EditorApp {
                                 });
                                 ui.label(when);
                                 ui.label(format!("{:.1} KB", b.size as f64 / 1024.0));
-                                if ui.button("⟲ Restore").on_hover_text("Replace the current save with this backup (the current file is backed up first)").clicked() {
+                                if ui.button(format!("⟲ {}", language.text("Restore"))).on_hover_text(language.text("Replace the current save with this backup (the current file is backed up first)").to_string()).clicked() {
                                     restore = Some(b.path.clone());
                                 }
-                                if ui.button("📂 Open").on_hover_text("Open the backup itself for viewing/editing").clicked() {
+                                if ui.button(format!("📂 {}", language.text("Open"))).on_hover_text(language.text("Open the backup itself for viewing/editing").to_string()).clicked() {
                                     open_backup = Some(b.path.clone());
                                 }
                                 ui.end_row();
@@ -1014,21 +1148,17 @@ impl EditorApp {
         }
 
         if self.about_open {
-            egui::Window::new("About")
+            egui::Window::new(language.text("About").to_string())
                 .open(&mut self.about_open)
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.heading("Casualties Unknown Save Editor");
+                    ui.heading(language.text("Casualties Unknown Save Editor").to_string());
                     ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
                     ui.add_space(6.0);
-                    ui.label(
-                        "Edits save.sv (gzip-compressed JSON). Unknown fields are preserved as-is.",
-                    );
-                    ui.label(
-                        "Item, limb and setting names are read from the game's own language files.",
-                    );
-                    ui.label("Built with egui.");
+                    ui.label(language.text("Edits save.sv (gzip-compressed JSON). Unknown fields are preserved as-is.").to_string());
+                    ui.label(language.text("Item, limb and setting names are read from the game's own language files.").to_string());
+                    ui.label(language.text("Built with egui.").to_string());
                 });
         }
     }
@@ -1036,6 +1166,7 @@ impl EditorApp {
     fn central(&mut self, ui: &mut Ui) {
         let names = Names {
             locale: self.locale.as_ref(),
+            interface_language: self.config.interface_language,
         };
         let Some(file) = self.save.as_mut() else {
             return;
@@ -1053,19 +1184,19 @@ impl EditorApp {
                 ui::character::show(ui, data, names);
             }
             Tab::Health => {
-                ui::health::show(ui, data);
+                ui::health::show(ui, data, names);
             }
             Tab::Limbs => {
                 ui::limbs::show(ui, data, names, &mut self.limbs);
             }
             Tab::Inventory => {
-                ui::inventory::show(ui, data, names, &mut self.inventory);
+                ui::inventory::show(ui, data, names, &self.item_stats, &mut self.inventory);
             }
             Tab::Run => {
                 ui::run::show(ui, data, names);
             }
             Tab::Raw => {
-                ui::raw::show(ui, data, &mut self.raw);
+                ui::raw::show(ui, data, &mut self.raw, self.config.interface_language);
             }
         }
     }

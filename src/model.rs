@@ -5,8 +5,11 @@
 //! skill levels and their experience boundaries. They are UI-independent and
 //! unit tested.
 
+use std::collections::HashMap;
+
 use serde_json::{Map, Value, json};
 
+use crate::game_data::ItemStats;
 use crate::json::{get_f64, get_i64, set_bool, set_f64, set_i64};
 use crate::schema;
 
@@ -64,6 +67,96 @@ pub struct ItemGroup {
     pub location: Location,
     /// Indices into `items`; the first is the holder / worn item.
     pub indices: Vec<usize>,
+}
+
+/// Computed carrying load and capacity, with incomplete metadata flagged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CarryLoad {
+    pub weight: f32,
+    pub capacity: f32,
+    pub complete: bool,
+}
+
+const DEFAULT_ENCUMBRANCE_CAP: f64 = 1.0;
+
+/// Computes the game's encumbrance value from equipped items, container
+/// contents, body state and run settings.
+pub fn carry_load(data: &Value, stats: &HashMap<String, ItemStats>) -> Option<CarryLoad> {
+    let body = data.get("body")?;
+    let skills = body.get("skills")?;
+    let field = |key: &str| body.get(key).and_then(Value::as_f64).map(|v| v as f32);
+    let weight_offset = field("weightOffset")?;
+    let sickness = field("sicknessAmount")?;
+    let hunger = field("hunger")?;
+    let thirst = field("thirst")?;
+    let strength = skills.get("STRFrom10").and_then(Value::as_f64)? as f32;
+    let resistance = skills.get("RESFrom10").and_then(Value::as_f64)? as f32;
+    let run_cap = data
+        .get("runSettings")
+        .and_then(Value::as_array)
+        .and_then(|settings| {
+            settings.iter().find_map(|setting| {
+                (setting.get("Item1").and_then(Value::as_str) == Some("encumbrancecap"))
+                    .then(|| setting.get("Item2").and_then(Value::as_f64))
+                    .flatten()
+            })
+        })
+        .unwrap_or(DEFAULT_ENCUMBRANCE_CAP) as f32;
+    let base_capacity = 11.0 + (weight_offset + 15.0).clamp(-60.0, 0.0) * 0.1 - sickness * 0.025
+        + if hunger <= 100.0 { 1.5 } else { 0.0 }
+        - if hunger < 40.0 { 1.5 } else { 0.0 }
+        - if thirst < 40.0 { 1.0 } else { 0.0 }
+        + (strength * 0.5).min(resistance * 0.5);
+    let capacity = base_capacity * run_cap;
+    if !capacity.is_finite() || capacity <= 0.0 || !run_cap.is_finite() {
+        return None;
+    }
+
+    let all = items(data);
+    let mut weight = 0.0;
+    let mut complete = true;
+    for group in group_items(data) {
+        let Some(&root_index) = group.indices.first() else {
+            continue;
+        };
+        let root = all.get(root_index)?;
+        let root_id = root.get("id").and_then(Value::as_str).unwrap_or("");
+        let Some(root_stats) = stats.get(root_id) else {
+            complete = false;
+            continue;
+        };
+        weight += root_stats.total_weight(item_condition(root));
+        if group.indices.len() <= 1 {
+            continue;
+        }
+        let Some(multiplier) = root_stats.container_encumbrance else {
+            complete = false;
+            continue;
+        };
+        for &index in group.indices.iter().skip(1) {
+            let Some(item) = all.get(index) else {
+                complete = false;
+                continue;
+            };
+            let id = item.get("id").and_then(Value::as_str).unwrap_or("");
+            let Some(item_stats) = stats.get(id) else {
+                complete = false;
+                continue;
+            };
+            weight += item_stats.total_weight(item_condition(item)) * multiplier;
+        }
+    }
+    weight.is_finite().then_some(CarryLoad {
+        weight,
+        capacity,
+        complete,
+    })
+}
+
+fn item_condition(item: &Value) -> f32 {
+    item.get("condition")
+        .and_then(Value::as_f64)
+        .map_or(1.0, |value| value as f32)
 }
 
 fn items(data: &Value) -> &[Value] {
@@ -372,12 +465,68 @@ mod tests {
             .collect()
     }
 
+    fn item_stats(weight: f32, container_encumbrance: Option<f32>) -> ItemStats {
+        ItemStats {
+            category: "container".to_owned(),
+            weight,
+            scale_weight_with_condition: false,
+            wearable: false,
+            wear_slot: None,
+            armor: None,
+            insulation: None,
+            container_encumbrance,
+        }
+    }
+
     #[test]
     fn groups_follow_holder_then_contents() {
         let g = group_items(&doc());
         assert_eq!(g.len(), 2);
         assert_eq!(g[0].location, Location::Slot(5));
         assert_eq!(g[1].indices, vec![2, 3]);
+    }
+
+    #[test]
+    fn carry_load_uses_container_multiplier_and_game_capacity_formula() {
+        let data = json!({
+            "body": {
+                "weightOffset": 0.0,
+                "sicknessAmount": 0.0,
+                "hunger": 100.0,
+                "thirst": 100.0,
+                "skills": {"STRFrom10": 4.0, "RESFrom10": 2.0}
+            },
+            "runSettings": [],
+            "items": [
+                {"id": "bag", "slot": 0, "condition": 1.0},
+                {"id": "rock", "slot": 0, "condition": 1.0}
+            ]
+        });
+        let stats = HashMap::from([
+            ("bag".to_owned(), item_stats(2.0, Some(0.25))),
+            ("rock".to_owned(), item_stats(4.0, None)),
+        ]);
+        let load = carry_load(&data, &stats).unwrap();
+        assert_eq!(load.weight, 3.0);
+        assert_eq!(load.capacity, 13.5);
+        assert!(load.complete);
+    }
+
+    #[test]
+    fn carry_load_does_not_claim_completeness_for_missing_item_data() {
+        let data = json!({
+            "body": {
+                "weightOffset": 0.0,
+                "sicknessAmount": 0.0,
+                "hunger": 100.0,
+                "thirst": 100.0,
+                "skills": {"STRFrom10": 4.0, "RESFrom10": 2.0}
+            },
+            "items": [{"id": "unknown", "slot": 0}]
+        });
+        let load = carry_load(&data, &HashMap::new()).unwrap();
+        assert_eq!(load.weight, 0.0);
+        assert!(!load.complete);
     }
 
     #[test]

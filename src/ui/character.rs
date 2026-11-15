@@ -15,12 +15,12 @@ const IDENTITY: &[(&str, &str, &str)] = &[
     ("cVer", "Version", "Character generation version."),
 ];
 
-fn label(ui: &mut Ui, text: &str, help: &str) {
+fn label(ui: &mut Ui, names: Names, text: &str, help: &str) {
     ui.add_sized(
         [LABEL_WIDTH, ui.spacing().interact_size.y],
-        egui::Label::new(text),
+        egui::Label::new(names.text(text).to_string()),
     )
-    .on_hover_text(help);
+    .on_hover_text(names.text(help).to_string());
 }
 
 /// Character selector for the `character` field.
@@ -58,30 +58,38 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
         return false;
     };
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        section_heading(ui, "🐾", "Identity");
+        section_heading(ui, names, "🐾", "Identity");
         card(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                label(ui, "Character", "Playable character (`character`).");
+                label(
+                    ui,
+                    names,
+                    "Character",
+                    "Playable character (`character`).",
+                );
                 changed |= character_combo(ui, root);
             });
             for &(key, text, help) in IDENTITY {
                 if let Some(v) = root.get_mut(key) {
                     ui.horizontal(|ui| {
-                        label(ui, text, help);
+                        label(ui, names, text, help);
                         changed |= number_editor(ui, v, 0.2);
                     });
                 }
             }
         });
 
-        section_heading(ui, "💪", "Skills");
+        section_heading(ui, names, "💪", "Skills");
         let Some(skills) = root
             .get_mut("body")
             .and_then(|b| b.get_mut("skills"))
             .and_then(Value::as_object_mut)
         else {
-            ui.colored_label(colors::WARN, "No `body.skills` in this save.");
+            ui.colored_label(
+                colors::WARN,
+                names.text("No `body.skills` in this save.").to_string(),
+            );
             return;
         };
         card(ui, |ui| {
@@ -90,7 +98,11 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
                 changed |= skill_row(ui, skills, def, names);
                 ui.add_space(6.0);
             }
-            ui.weak("Changing a level recalculates the experience bounds exactly like the game does, keeping the progress towards the next level.");
+            ui.weak(
+                names
+                    .text("Changing a level recalculates the experience bounds exactly like the game does, keeping the progress towards the next level.")
+                    .to_string(),
+            );
         });
         let known = |k: &str| {
             schema::SKILLS.iter().any(|s| {
@@ -126,7 +138,7 @@ fn skill_row(
             egui::Label::new(RichText::new(format!("{} ({key})", names.skill(def))).strong()),
         )
         .on_hover_text(def.help);
-        ui.label("Level");
+        ui.label(names.text("Level").to_string());
         let mut new_level = level;
         if ui
             .add(
@@ -159,14 +171,23 @@ fn skill_row(
                     progress * 100.0
                 )),
         )
-        .on_hover_text(format!(
-            "Level {level}: {min:.0} XP, level {}: {max:.0} XP",
-            level + 1
-        ));
+        .on_hover_text(
+            if names.interface_language == super::InterfaceLanguage::Russian {
+                format!(
+                    "Уровень {level}: {min:.0} опыта, уровень {}: {max:.0} опыта",
+                    level + 1
+                )
+            } else {
+                format!(
+                    "Level {level}: {min:.0} XP, level {}: {max:.0} XP",
+                    level + 1
+                )
+            },
+        );
     });
     ui.horizontal(|ui| {
         ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
-        ui.label("Experience");
+        ui.label(names.text("Experience").to_string());
         let min = get_f64(skills, &format!("min{key}")).unwrap_or(0.0);
         let max = get_f64(skills, &format!("max{key}")).unwrap_or(0.0);
         if let Some(slot) = skills.get_mut(&format!("exp{key}")) {
@@ -186,7 +207,7 @@ fn skill_row(
                 changed = true;
             }
         }
-        ui.label("Gain multiplier");
+        ui.label(names.text("Gain multiplier").to_string());
         if let Some(slot) = skills.get_mut(&format!("{key}GainMult")) {
             changed |= number_editor(ui, slot, 0.01);
         }

@@ -300,13 +300,26 @@ fn array_children(
 
 /// Full raw-data tab: toolbar, tree or text editor. Returns `true` if the
 /// document changed.
-pub fn show(ui: &mut Ui, data: &mut Value, state: &mut TreeState) -> bool {
+pub fn show(
+    ui: &mut Ui,
+    data: &mut Value,
+    state: &mut TreeState,
+    language: super::InterfaceLanguage,
+) -> bool {
     let mut changed = false;
     state.open_override = None;
     ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.text_mode, false, "🌳 Tree");
+        ui.selectable_value(
+            &mut state.text_mode,
+            false,
+            format!("🌳 {}", language.text("Tree")),
+        );
         if ui
-            .selectable_value(&mut state.text_mode, true, "📝 Text")
+            .selectable_value(
+                &mut state.text_mode,
+                true,
+                format!("📝 {}", language.text("Text")),
+            )
             .clicked()
             || (state.text_mode && !state.text_dirty && state.text.is_empty())
         {
@@ -319,21 +332,30 @@ pub fn show(ui: &mut Ui, data: &mut Value, state: &mut TreeState) -> bool {
             ui.label("🔍");
             ui.add(
                 egui::TextEdit::singleline(&mut state.search)
-                    .hint_text("Filter keys / values")
+                    .hint_text(language.text("Filter keys / values").to_string())
                     .desired_width(220.0),
             );
             if !state.search.is_empty() && ui.small_button("✖").clicked() {
                 state.search.clear();
             }
-            if ui.button("⊞ Expand all").clicked() {
+            if ui
+                .button(format!("⊞ {}", language.text("Expand all")))
+                .clicked()
+            {
                 state.open_override = Some(true);
             }
-            if ui.button("⊟ Collapse all").clicked() {
+            if ui
+                .button(format!("⊟ {}", language.text("Collapse all")))
+                .clicked()
+            {
                 state.open_override = Some(false);
             }
         } else {
             if ui
-                .add_enabled(state.text_dirty, egui::Button::new("✔ Apply"))
+                .add_enabled(
+                    state.text_dirty,
+                    egui::Button::new(format!("✔ {}", language.text("Apply"))),
+                )
                 .clicked()
             {
                 match serde_json::from_str::<Value>(&state.text) {
@@ -349,13 +371,19 @@ pub fn show(ui: &mut Ui, data: &mut Value, state: &mut TreeState) -> bool {
                     Err(e) => state.text_error = Some(format!("JSON error: {e}")),
                 }
             }
-            if ui.button("↺ Reload from data").clicked() {
+            if ui
+                .button(format!("↺ {}", language.text("Reload from data")))
+                .clicked()
+            {
                 state.text = crate::save::to_pretty_json(data);
                 state.text_dirty = false;
                 state.text_error = None;
             }
             if state.text_dirty {
-                ui.colored_label(super::colors::WARN, "Unapplied text changes");
+                ui.colored_label(
+                    super::colors::WARN,
+                    language.text("Unapplied text changes").to_string(),
+                );
             }
         }
     });

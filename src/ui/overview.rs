@@ -45,23 +45,23 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> OverviewResult {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(230.0);
-                    section_heading(ui, "🧍", "Body");
+                    section_heading(ui, names, "🧍", "Body");
                     card(ui, |ui| {
                         result.open_limb = super::limbs::small_figure(ui, data, names, 360.0);
-                        ui.weak("Click a limb to edit it.");
+                        ui.weak(names.text("Click a limb to edit it.").to_string());
                     });
                 });
                 ui.vertical(|ui| {
                     summary(ui, data, names);
-                    section_heading(ui, "❤", "Vital signs");
+                    section_heading(ui, names, "❤", "Vital signs");
                     card(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        vitals(ui, data);
+                        vitals(ui, data, names);
                     });
-                    section_heading(ui, "⚡", "Quick fixes");
+                    section_heading(ui, names, "⚡", "Quick fixes");
                     card(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        result.changed |= quick_fixes(ui, data);
+                        result.changed |= quick_fixes(ui, data, names);
                     });
                 });
             });
@@ -71,7 +71,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> OverviewResult {
 
 fn summary(ui: &mut Ui, data: &Value, names: Names) {
     let Some(root) = data.as_object() else { return };
-    section_heading(ui, "🐾", "Run");
+    section_heading(ui, names, "🐾", "Run");
     card(ui, |ui| {
         ui.set_width(ui.available_width());
         let character = get_i64(root, "character")
@@ -80,23 +80,27 @@ fn summary(ui: &mut Ui, data: &Value, names: Names) {
             .copied()
             .unwrap_or("Unknown");
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(character).heading().strong());
+            ui.label(
+                RichText::new(names.text(character).to_string())
+                    .heading()
+                    .strong(),
+            );
             if let Some(id) = get_i64(root, "cId") {
                 ui.label(RichText::new(format!("#{id}")).heading().weak());
             }
             ui.separator();
             if let Some(age) = get_i64(root, "cAge") {
-                ui.label(format!("Age {age}"));
+                ui.label(format!("{} {age}", names.text("Age")));
             }
             if let Some(h) = get_i64(root, "cHeight") {
-                ui.label(format!("· {h} cm"));
+                ui.label(format!("· {h} {}", names.text("cm")));
             }
         });
         ui.horizontal_wrapped(|ui| {
             if let Some(b) = get_i64(root, "biome") {
-                ui.label("Layer:");
+                ui.label(names.text("Layer:").to_string());
                 ui.label(RichText::new(names.layer(b)).color(colors::ACCENT).strong());
-                ui.weak(format!("(biome {b})"));
+                ui.weak(format!("({} {b})", names.text("Biome")));
             }
             if let Some(t) = get_f64(root, "runTime") {
                 ui.separator();
@@ -104,17 +108,17 @@ fn summary(ui: &mut Ui, data: &Value, names: Names) {
             }
             if let Some(d) = get_i64(root, "totalTraveled") {
                 ui.separator();
-                ui.label(format!("🚶 {d} m traveled"));
+                ui.label(format!("🚶 {d} {}", names.text("m traveled")));
             }
             let items = root
                 .get("items")
                 .and_then(Value::as_array)
                 .map_or(0, Vec::len);
             ui.separator();
-            ui.label(format!("🎒 {items} items"));
+            ui.label(format!("🎒 {items} {}", names.text("items")));
             if get_bool(root, "cheatedSave") == Some(true) {
                 ui.separator();
-                ui.colored_label(colors::WARN, "⚠ cheated save");
+                ui.colored_label(colors::WARN, format!("⚠ {}", names.text("cheated save")));
             }
         });
         if let Some(skills) = root
@@ -143,9 +147,9 @@ fn summary(ui: &mut Ui, data: &Value, names: Names) {
     });
 }
 
-fn vitals(ui: &mut Ui, data: &Value) {
+fn vitals(ui: &mut Ui, data: &Value, names: Names) {
     let Some(body) = data.get("body").and_then(Value::as_object) else {
-        ui.weak("No body data.");
+        ui.weak(names.text("No body data.").to_string());
         return;
     };
     let columns = ((ui.available_width() / 330.0).floor() as usize).clamp(1, 3);
@@ -158,7 +162,8 @@ fn vitals(ui: &mut Ui, data: &Value) {
                 let (Some(spec), Some(v)) = (schema::body_field(key), get_f64(body, key)) else {
                     continue;
                 };
-                ui.label(spec.label).on_hover_text(spec.help);
+                ui.label(names.text(spec.label).to_string())
+                    .on_hover_text(spec.help);
                 super::mini_gauge(ui, spec, v, 120.0);
                 ui.colored_label(
                     value_color(spec, v as f32),
@@ -172,32 +177,45 @@ fn vitals(ui: &mut Ui, data: &Value) {
         });
 }
 
-fn quick_fixes(ui: &mut Ui, data: &mut Value) -> bool {
+fn quick_fixes(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
         if ui
-            .button("✚ Heal limbs")
-            .on_hover_text("Heal all limbs (keeps dismembered limbs missing)")
+            .button(format!("✚ {}", names.text("Heal limbs")))
+            .on_hover_text(
+                names
+                    .text("Heal all limbs (keeps dismembered limbs missing)")
+                    .to_string(),
+            )
             .clicked()
         {
             model::heal_limbs(data, false);
             changed = true;
         }
-        if ui.button("✚ Heal + regrow limbs").clicked() {
+        if ui
+            .button(format!("✚ {}", names.text("Heal + regrow limbs")))
+            .clicked()
+        {
             model::heal_limbs(data, true);
             changed = true;
         }
-        if ui.button("❤ Restore vitals").clicked() {
+        if ui
+            .button(format!("❤ {}", names.text("Restore vitals")))
+            .clicked()
+        {
             model::restore_vitals(data);
             changed = true;
         }
-        if ui.button("🍖 Fill needs").clicked() {
+        if ui
+            .button(format!("🍖 {}", names.text("Fill needs")))
+            .clicked()
+        {
             model::fill_needs(data);
             changed = true;
         }
         if ui
-            .button("🌟 Full recovery")
-            .on_hover_text("All of the above")
+            .button(format!("🌟 {}", names.text("Full recovery")))
+            .on_hover_text(names.text("All of the above").to_string())
             .clicked()
         {
             model::heal_limbs(data, true);
@@ -206,6 +224,10 @@ fn quick_fixes(ui: &mut Ui, data: &mut Value) -> bool {
             changed = true;
         }
     });
-    ui.weak("Every change can be undone with Ctrl+Z; nothing is written until you save.");
+    ui.weak(
+        names
+            .text("Every change can be undone with Ctrl+Z; nothing is written until you save.")
+            .to_string(),
+    );
     changed
 }

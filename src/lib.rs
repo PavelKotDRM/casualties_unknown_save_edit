@@ -18,6 +18,7 @@
 
 pub mod app;
 pub mod catalog;
+pub mod game_data;
 pub mod json;
 pub mod locale;
 pub mod model;

@@ -1,11 +1,14 @@
 //! Inventory tab: items grouped by location (held slot / worn slot) with the
 //! container contents, an item details editor and an "add item" catalogue.
 
+use std::collections::HashMap;
+
 use egui::{ProgressBar, RichText, Ui};
 use serde_json::{Map, Value, json};
 
 use super::{Names, card, category_icon, colors, quality_color};
 use crate::catalog;
+use crate::game_data::ItemStats;
 use crate::json::{self, get_bool, get_f64, get_str};
 use crate::model::{self, Location};
 
@@ -37,11 +40,13 @@ enum RowAction {
 }
 
 /// Human-readable name of a location.
-pub fn location_name(loc: &Location) -> String {
+pub fn location_name(loc: &Location, language: super::InterfaceLanguage) -> String {
     match loc {
-        Location::Slot(s) => format!("Inventory slot {s}"),
-        Location::Worn(w) if w.is_empty() => "Unassigned (slot -1, no wear slot)".to_owned(),
-        Location::Worn(w) => format!("Worn: {w}"),
+        Location::Slot(s) => format!("{} {s}", language.text("Inventory slot")),
+        Location::Worn(w) if w.is_empty() => language
+            .text("Unassigned (slot -1, no wear slot)")
+            .into_owned(),
+        Location::Worn(w) => format!("{}: {w}", language.text("Worn")),
     }
 }
 
@@ -57,23 +62,29 @@ pub fn component_short_name(full: &str) -> &str {
     full.split(',').next().unwrap_or(full).trim()
 }
 
-/// All wear slots known to the catalogue, sorted.
-fn wear_slots() -> Vec<&'static str> {
-    let mut v: Vec<&str> = catalog::ITEMS
-        .iter()
-        .map(|d| d.wear_slot)
-        .filter(|w| !w.is_empty())
-        .collect();
-    v.sort_unstable();
-    v.dedup();
-    v
+fn item_wear_slot<'a>(id: &str, stats: &'a HashMap<String, ItemStats>) -> Option<&'a str> {
+    if let Some(item) = stats.get(id) {
+        return item.wearable.then_some(item.wear_slot.as_deref()).flatten();
+    }
+    catalog::item(id)
+        .filter(|item| !item.wear_slot.is_empty())
+        .map(|item| item.wear_slot)
 }
 
-/// Locations offered in choosers: existing ones, slots 0–9 and wear slots.
-fn location_choices(data: &Value) -> Vec<Location> {
+/// Locations offered in choosers, with only compatible wear slots.
+fn location_choices(
+    data: &Value,
+    allowed_wear_slot: Option<&str>,
+    current: &Location,
+    preserve_current: bool,
+) -> Vec<Location> {
     let mut out: Vec<Location> = model::group_items(data)
         .into_iter()
         .map(|g| g.location)
+        .filter(|location| match location {
+            Location::Slot(_) => true,
+            Location::Worn(slot) => allowed_wear_slot == Some(slot.as_str()),
+        })
         .collect();
     for s in 0..10 {
         let l = Location::Slot(s);
@@ -81,24 +92,35 @@ fn location_choices(data: &Value) -> Vec<Location> {
             out.push(l);
         }
     }
-    for w in wear_slots() {
-        let l = Location::Worn(w.to_owned());
+    if let Some(slot) = allowed_wear_slot {
+        let l = Location::Worn(slot.to_owned());
         if !out.contains(&l) {
             out.push(l);
         }
     }
+    if preserve_current && !out.contains(current) {
+        out.push(current.clone());
+    }
     out
 }
 
-fn location_combo(ui: &mut Ui, id: &str, data: &Value, current: &mut Location) -> bool {
+fn location_combo(
+    ui: &mut Ui,
+    id: &str,
+    data: &Value,
+    current: &mut Location,
+    allowed_wear_slot: Option<&str>,
+    preserve_current: bool,
+    language: super::InterfaceLanguage,
+) -> bool {
     let before = current.clone();
     egui::ComboBox::from_id_salt(id)
-        .selected_text(location_name(current))
+        .selected_text(location_name(current, language))
         .width(240.0)
         .height(400.0)
         .show_ui(ui, |ui| {
-            for loc in location_choices(data) {
-                let text = format!("{} {}", location_icon(&loc), location_name(&loc));
+            for loc in location_choices(data, allowed_wear_slot, current, preserve_current) {
+                let text = format!("{} {}", location_icon(&loc), location_name(&loc, language));
                 ui.selectable_value(current, loc, text);
             }
         });
@@ -112,14 +134,23 @@ fn items(data: &Value) -> &[Value] {
 }
 
 /// Shows the inventory tab. Returns `true` if the document changed.
-pub fn show(ui: &mut Ui, data: &mut Value, names: Names, state: &mut InventoryState) -> bool {
+pub fn show(
+    ui: &mut Ui,
+    data: &mut Value,
+    names: Names,
+    stats: &HashMap<String, ItemStats>,
+    state: &mut InventoryState,
+) -> bool {
     let mut changed = false;
     let count = items(data).len();
     if state.selected.is_some_and(|i| i >= count) {
         state.selected = None;
     }
     ui.horizontal(|ui| {
-        if ui.button("➕ Add item…").clicked() {
+        if ui
+            .button(format!("➕ {}", names.text("Add item…")))
+            .clicked()
+        {
             state.add_open = true;
             if state.add_location.is_none() {
                 state.add_location = Some(
@@ -131,8 +162,48 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names, state: &mut InventorySt
             }
         }
         ui.separator();
-        ui.label(format!("{count} items"));
-        ui.weak("· The first item of a location is held / worn; the following ones are stored inside it.");
+        ui.label(format!("{count} {}", names.text("items")));
+        ui.weak(format!(
+            "· {}",
+            names
+                .text("The first item of a location is held / worn; the following ones are stored inside it.")
+        ));
+        if let Some(load) = model::carry_load(data, stats) {
+            ui.separator();
+            let color = if load.complete && load.weight > load.capacity {
+                colors::BAD
+            } else {
+                colors::NEUTRAL
+            };
+            ui.colored_label(
+                color,
+                format!(
+                    "{}: {:.1} / {:.1} kg",
+                    names.text("Load"),
+                    load.weight,
+                    load.capacity
+                ),
+            );
+            if !load.complete {
+                ui.colored_label(
+                    colors::WARN,
+                    names.text("Incomplete: some item or container stats are unavailable.")
+                        .to_string(),
+                );
+            } else if load.weight > load.capacity {
+                ui.colored_label(
+                    colors::BAD,
+                    names.text("⚠ Character is overburdened.").to_string(),
+                );
+            }
+        } else {
+            ui.colored_label(
+                colors::WARN,
+                names
+                    .text("Carry capacity cannot be calculated from this save.")
+                    .to_string(),
+            );
+        }
     });
     ui.separator();
 
@@ -145,7 +216,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names, state: &mut InventorySt
                 .id_salt("inv_list")
                 .auto_shrink(false)
                 .show(ui, |ui| {
-                    action = item_list(ui, data, names, state.selected);
+                    action = item_list(ui, data, names, stats, state.selected);
                 });
         });
         ui.separator();
@@ -154,10 +225,10 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names, state: &mut InventorySt
                 .id_salt("inv_details")
                 .auto_shrink(false)
                 .show(ui, |ui| match state.selected {
-                    Some(i) => changed |= details(ui, data, names, state, i),
+                    Some(i) => changed |= details(ui, data, names, stats, state, i),
                     None => {
                         ui.add_space(20.0);
-                        ui.weak("Select an item to edit it.");
+                        ui.weak(names.text("Select an item to edit it.").to_string());
                     }
                 });
         });
@@ -167,7 +238,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names, state: &mut InventorySt
         changed |= apply_action(data, state, a);
     }
     if state.add_open {
-        changed |= add_window(ui, data, names, state);
+        changed |= add_window(ui, data, names, stats, state);
     }
     changed
 }
@@ -214,6 +285,7 @@ fn item_list(
     ui: &mut Ui,
     data: &Value,
     names: Names,
+    stats: &HashMap<String, ItemStats>,
     selected: Option<usize>,
 ) -> Option<RowAction> {
     let mut action = None;
@@ -225,7 +297,7 @@ fn item_list(
                 RichText::new(format!(
                     "{}  {}",
                     location_icon(&group.location),
-                    location_name(&group.location)
+                    location_name(&group.location, names.interface_language)
                 ))
                 .strong()
                 .color(colors::ACCENT),
@@ -238,16 +310,28 @@ fn item_list(
                         ui.add_space(22.0);
                         ui.weak("↳");
                     }
-                    if let Some(a) =
-                        item_row(ui, &all[i], i, names, selected == Some(i), first, last)
-                    {
+                    if let Some(a) = item_row(
+                        ui,
+                        &all[i],
+                        i,
+                        names,
+                        stats,
+                        selected == Some(i),
+                        first,
+                        last,
+                    ) {
                         action = Some(a);
                     }
                 });
                 if first && group.indices.len() > 1 {
                     ui.horizontal(|ui| {
                         ui.add_space(22.0);
-                        ui.weak(format!("contains {} item(s):", group.indices.len() - 1));
+                        ui.weak(format!(
+                            "{} {} {}",
+                            names.text("contains"),
+                            group.indices.len() - 1,
+                            names.text("item(s):")
+                        ));
                     });
                 }
             }
@@ -255,7 +339,7 @@ fn item_list(
         ui.add_space(4.0);
     }
     if all.is_empty() {
-        ui.weak("The inventory is empty.");
+        ui.weak(names.text("The inventory is empty.").to_string());
     }
     action
 }
@@ -265,6 +349,7 @@ fn item_row(
     item: &Value,
     i: usize,
     names: Names,
+    stats: &HashMap<String, ItemStats>,
     selected: bool,
     first: bool,
     last: bool,
@@ -281,6 +366,13 @@ fn item_row(
     if r.clicked() {
         action = Some(RowAction::Select(i));
     }
+    if let Some(item_stats) = stats.get(id) {
+        ui.weak(format!(
+            "{:.1} kg",
+            item_stats
+                .total_weight(item.get("condition").and_then(Value::as_f64).unwrap_or(1.0) as f32)
+        ));
+    }
     r.on_hover_ui(|ui| {
         ui.strong(names.item(id));
         ui.weak(format!("id: {id} · items[{i}]"));
@@ -288,7 +380,12 @@ fn item_row(
             ui.label(d);
         }
         if def.is_none() {
-            ui.colored_label(colors::WARN, "Unknown id — not in the game's item list.");
+            ui.colored_label(
+                colors::WARN,
+                names
+                    .text("Unknown id — not in the game's item list.")
+                    .to_string(),
+            );
         }
     });
     // Align the condition bars in one column, regardless of indent and name length.
@@ -305,24 +402,32 @@ fn item_row(
             .fill(quality_color(cond))
             .text(RichText::new(format!("{:.0}%", cond * 100.0)).small()),
     )
-    .on_hover_text("Condition");
+    .on_hover_text(names.text("Condition").to_string());
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if ui.small_button("🗑").on_hover_text("Delete").clicked() {
+        if ui
+            .small_button("🗑")
+            .on_hover_text(names.text("Delete").to_string())
+            .clicked()
+        {
             action = Some(RowAction::Delete(i));
         }
-        if ui.small_button("⧉").on_hover_text("Duplicate").clicked() {
+        if ui
+            .small_button("⧉")
+            .on_hover_text(names.text("Duplicate").to_string())
+            .clicked()
+        {
             action = Some(RowAction::Duplicate(i));
         }
         if ui
             .add_enabled(!last, egui::Button::new("⏷").small())
-            .on_hover_text("Move down")
+            .on_hover_text(names.text("Move down").to_string())
             .clicked()
         {
             action = Some(RowAction::Down(i));
         }
         if ui
             .add_enabled(!first, egui::Button::new("⏶").small())
-            .on_hover_text("Move up")
+            .on_hover_text(names.text("Move up").to_string())
             .clicked()
         {
             action = Some(RowAction::Up(i));
@@ -336,17 +441,21 @@ fn item_row(
         } else {
             RichText::new("☆")
         };
-        if ui.small_button(star).on_hover_text("Favourite").clicked() {
+        if ui
+            .small_button(star)
+            .on_hover_text(names.text("Favourite").to_string())
+            .clicked()
+        {
             action = Some(RowAction::ToggleFavourite(i));
         }
     });
     action
 }
 
-fn row_label(ui: &mut Ui, text: &str) {
+fn row_label(ui: &mut Ui, names: Names, text: &str) {
     ui.add_sized(
         [120.0, ui.spacing().interact_size.y],
-        egui::Label::new(text),
+        egui::Label::new(names.text(text).to_string()),
     );
 }
 
@@ -354,6 +463,7 @@ fn details(
     ui: &mut Ui,
     data: &mut Value,
     names: Names,
+    stats: &HashMap<String, ItemStats>,
     state: &mut InventoryState,
     index: usize,
 ) -> bool {
@@ -377,12 +487,13 @@ fn details(
     }
     if let Some(d) = def {
         ui.weak(format!(
-            "Category: {}{}{}",
-            d.category,
+            "{} {}{}{}",
+            names.text("Category:"),
+            names.text(d.category),
             if d.wear_slot.is_empty() {
                 String::new()
             } else {
-                format!(" · wearable ({})", d.wear_slot)
+                format!(" · {} ({})", names.text("wearable"), d.wear_slot)
             },
             if d.capacity > 0.0 {
                 format!(" · holds {} ml", super::fmt_num(d.capacity as f64))
@@ -391,14 +502,42 @@ fn details(
             },
         ));
     }
+    if let Some(item_stats) = stats.get(&id) {
+        ui.weak(format!(
+            "{} {:.2} kg{}{}",
+            names.text("Weight:"),
+            item_stats
+                .total_weight(item.get("condition").and_then(Value::as_f64).unwrap_or(1.0) as f32),
+            item_stats.armor.map_or(String::new(), |value| {
+                format!(" · {}: {value:.2}", names.text("armor"))
+            }),
+            item_stats.insulation.map_or(String::new(), |value| {
+                format!(" · {}: {value:.2}", names.text("insulation"))
+            }),
+        ));
+    } else {
+        ui.colored_label(
+            colors::WARN,
+            names
+                .text("Item stats unavailable; sync game data to show verified weight.")
+                .to_string(),
+        );
+    }
     ui.add_space(6.0);
 
     // Location (moving changes the index).
     let mut loc = Location::of(&item);
     ui.horizontal(|ui| {
-        row_label(ui, "Location");
-        if location_combo(ui, "item_location", data, &mut loc)
-            && let Some(n) = model::move_to_location(data, index, &loc)
+        row_label(ui, names, "Location");
+        if location_combo(
+            ui,
+            "item_location",
+            data,
+            &mut loc,
+            item_wear_slot(&id, stats),
+            true,
+            names.interface_language,
+        ) && let Some(n) = model::move_to_location(data, index, &loc)
         {
             state.selected = Some(n);
             changed = true;
@@ -407,9 +546,10 @@ fn details(
     if changed {
         return true;
     }
-    if let (Location::Worn(w), Some(d)) = (&loc, def)
+    let expected_wear_slot = item_wear_slot(&id, stats);
+    if let Location::Worn(w) = &loc
         && !w.is_empty()
-        && d.wear_slot != w
+        && expected_wear_slot != Some(w.as_str())
         && model::group_items(data)
             .iter()
             .any(|g| g.location == loc && g.indices.first() == Some(&index))
@@ -417,8 +557,13 @@ fn details(
         ui.colored_label(
             colors::WARN,
             format!(
-                "⚠ This item's wear slot is \"{}\", not \"{w}\".",
-                d.wear_slot
+                "{}",
+                names
+                    .text(
+                        "⚠ This item belongs in wear slot {expected}; it is assigned to {actual}."
+                    )
+                    .replace("{expected}", expected_wear_slot.unwrap_or("none"))
+                    .replace("{actual}", w)
             ),
         );
     }
@@ -432,12 +577,12 @@ fn details(
     };
     card(ui, |ui| {
         ui.set_width(ui.available_width());
-        changed |= item_fields(ui, obj, &id);
+        changed |= item_fields(ui, obj, &id, names);
     });
 
     // Components
     ui.add_space(8.0);
-    ui.label(RichText::new("Components").strong());
+    ui.label(RichText::new(names.text("Components").to_string()).strong());
     let comps = ensure_components(data, index);
     if let Some(comps) = comps {
         changed |= components_editor(ui, comps, def, names);
@@ -445,10 +590,10 @@ fn details(
     changed
 }
 
-fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str) -> bool {
+fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str, names: Names) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
-        row_label(ui, "Item id");
+        row_label(ui, names, "Item id");
         let mut text = id.to_owned();
         let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(180.0));
         if r.changed() {
@@ -456,12 +601,12 @@ fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str) -> bool {
             changed = true;
         }
         if catalog::item(id).is_none() {
-            ui.colored_label(colors::WARN, "unknown id");
+            ui.colored_label(colors::WARN, names.text("unknown id").to_string());
         }
     });
     if let Some(slot) = obj.get_mut("condition") {
         ui.horizontal(|ui| {
-            row_label(ui, "Condition");
+            row_label(ui, names, "Condition");
             let mut v = slot.as_f64().unwrap_or(1.0);
             let spec = crate::schema::FieldSpec {
                 key: "condition",
@@ -482,7 +627,7 @@ fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str) -> bool {
     }
     if let Some(mut fav) = get_bool(obj, "favourited") {
         ui.horizontal(|ui| {
-            row_label(ui, "Favourited");
+            row_label(ui, names, "Favourited");
             if ui.checkbox(&mut fav, "").changed() {
                 json::set_bool(obj, "favourited", fav);
                 changed = true;
@@ -491,11 +636,11 @@ fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str) -> bool {
     }
     if let Some(Value::String(label)) = obj.get_mut("label") {
         ui.horizontal(|ui| {
-            row_label(ui, "Label");
+            row_label(ui, names, "Label");
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(label)
-                        .hint_text("custom name")
+                        .hint_text(names.text("custom name").to_string())
                         .desired_width(180.0),
                 )
                 .changed();
@@ -503,7 +648,7 @@ fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str) -> bool {
     }
     if let Some(slot) = obj.get_mut("swatch") {
         ui.horizontal(|ui| {
-            row_label(ui, "Swatch");
+            row_label(ui, names, "Swatch");
             changed |= super::number_editor(ui, slot, 0.05);
         })
         .response
@@ -549,7 +694,11 @@ fn components_editor(
 ) -> bool {
     let mut changed = false;
     if comps.is_empty() {
-        ui.weak("No saved component state (the game uses the item's defaults).");
+        ui.weak(
+            names
+                .text("No saved component state (the game uses the item's defaults).")
+                .to_string(),
+        );
     }
     let keys: Vec<String> = comps.keys().cloned().collect();
     let mut remove = None;
@@ -565,7 +714,11 @@ fn components_editor(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .small_button("🗑")
-                        .on_hover_text("Remove this component (use defaults)")
+                        .on_hover_text(
+                            names
+                                .text("Remove this component (use defaults)")
+                                .to_string(),
+                        )
                         .clicked()
                     {
                         remove = Some(key.clone());
@@ -578,7 +731,7 @@ fn components_editor(
             };
             changed |= match short.as_str() {
                 "WaterContainerItem" => liquid_editor(ui, obj, def, names),
-                "BatteryItem" => battery_editor(ui, obj),
+                "BatteryItem" => battery_editor(ui, obj, names),
                 _ => generic_component(ui, &key, obj),
             };
         });
@@ -589,7 +742,9 @@ fn components_editor(
     }
     if def.is_some_and(|d| d.capacity > 0.0)
         && !comps.contains_key(WATER)
-        && ui.button("💧 Add liquid contents").clicked()
+        && ui
+            .button(format!("💧 {}", names.text("Add liquid contents")))
+            .clicked()
     {
         comps.insert(WATER.into(), json!({"stack": []}));
         changed = true;
@@ -697,15 +852,18 @@ fn liquid_editor(
         changed = true;
     }
     ui.horizontal(|ui| {
-        if ui.button("➕ Add liquid").clicked() {
+        if ui
+            .button(format!("➕ {}", names.text("Add liquid")))
+            .clicked()
+        {
             stack.push(json!({"liquidId": "water", "amount": 0.0}));
             changed = true;
         }
         if capacity > 0.0
             && total > 0.0
             && ui
-                .button("Fill to capacity")
-                .on_hover_text("Scales all liquids proportionally")
+                .button(names.text("Fill to capacity").to_string())
+                .on_hover_text(names.text("Scales all liquids proportionally").to_string())
                 .clicked()
         {
             let k = capacity / total;
@@ -716,7 +874,7 @@ fn liquid_editor(
             }
             changed = true;
         }
-        if !stack.is_empty() && ui.button("Empty").clicked() {
+        if !stack.is_empty() && ui.button(names.text("Empty").to_string()).clicked() {
             stack.clear();
             changed = true;
         }
@@ -724,17 +882,17 @@ fn liquid_editor(
     changed
 }
 
-fn battery_editor(ui: &mut Ui, obj: &mut Map<String, Value>) -> bool {
+fn battery_editor(ui: &mut Ui, obj: &mut Map<String, Value>, names: Names) -> bool {
     let mut changed = false;
     if let Some(slot) = obj.get_mut("maxCharge") {
         ui.horizontal(|ui| {
-            row_label(ui, "Max charge");
+            row_label(ui, names, "Max charge");
             changed |= super::number_editor(ui, slot, 1.0);
         });
     }
     if let Some(Value::String(kind)) = obj.get_mut("batteryType") {
         ui.horizontal(|ui| {
-            row_label(ui, "Battery");
+            row_label(ui, names, "Battery");
             let before = kind.clone();
             egui::ComboBox::from_id_salt("battery_type")
                 .selected_text(if kind.is_empty() {
@@ -764,11 +922,25 @@ fn battery_editor(ui: &mut Ui, obj: &mut Map<String, Value>) -> bool {
     changed
 }
 
-fn add_window(ui: &mut Ui, data: &mut Value, names: Names, state: &mut InventoryState) -> bool {
+fn add_window(
+    ui: &mut Ui,
+    data: &mut Value,
+    names: Names,
+    stats: &HashMap<String, ItemStats>,
+    state: &mut InventoryState,
+) -> bool {
     let mut changed = false;
     let mut open = state.add_open;
     let mut close = false;
-    egui::Window::new("➕ Add item")
+    let selected_id = state.add_id.clone();
+    let allowed_wear_slot = item_wear_slot(&selected_id, stats);
+    if matches!(
+        state.add_location.as_ref(),
+        Some(Location::Worn(slot)) if allowed_wear_slot != Some(slot.as_str())
+    ) {
+        state.add_location = Some(Location::Slot(0));
+    }
+    egui::Window::new(format!("➕ {}", names.text("Add item")))
         .open(&mut open)
         .default_size([520.0, 560.0])
         .collapsible(false)
@@ -777,7 +949,7 @@ fn add_window(ui: &mut Ui, data: &mut Value, names: Names, state: &mut Inventory
                 ui.label("🔍");
                 ui.add(
                     egui::TextEdit::singleline(&mut state.add_search)
-                        .hint_text("Search name or id")
+                        .hint_text(names.text("Search name or id").to_string())
                         .desired_width(200.0),
                 );
                 let mut cats: Vec<&str> = catalog::ITEMS.iter().map(|d| d.category).collect();
@@ -785,15 +957,15 @@ fn add_window(ui: &mut Ui, data: &mut Value, names: Names, state: &mut Inventory
                 cats.dedup();
                 egui::ComboBox::from_id_salt("add_cat")
                     .selected_text(if state.add_category.is_empty() {
-                        "All categories"
+                        names.text("All categories").to_string()
                     } else {
-                        state.add_category.as_str()
+                        state.add_category.clone()
                     })
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut state.add_category,
                             String::new(),
-                            "All categories",
+                            names.text("All categories").to_string(),
                         );
                         for c in cats {
                             ui.selectable_value(
@@ -830,54 +1002,69 @@ fn add_window(ui: &mut Ui, data: &mut Value, names: Names, state: &mut Inventory
                             .on_hover_text(format!("id: {}\ncategory: {}", d.id, d.category));
                         if r.clicked() {
                             state.add_id = d.id.to_owned();
-                            if !d.wear_slot.is_empty() && state.add_location.is_none() {
-                                state.add_location = Some(Location::Worn(d.wear_slot.to_owned()));
-                            }
                         }
                         if r.double_clicked() {
                             state.add_id = d.id.to_owned();
-                            changed |= do_add(data, state);
+                            changed |= do_add(data, state, stats);
                         }
                     }
                     if list.is_empty() {
-                        ui.weak("Nothing found.");
+                        ui.weak(names.text("Nothing found.").to_string());
                     }
                 });
             ui.separator();
             ui.horizontal(|ui| {
-                row_label(ui, "Item id");
+                row_label(ui, names, "Item id");
                 ui.add(egui::TextEdit::singleline(&mut state.add_id).desired_width(180.0));
                 if !state.add_id.is_empty() {
                     ui.label(names.item(&state.add_id));
                 }
             });
             ui.horizontal(|ui| {
-                row_label(ui, "Put into");
+                row_label(ui, names, "Put into");
                 let mut loc = state.add_location.clone().unwrap_or(Location::Slot(0));
-                location_combo(ui, "add_location", data, &mut loc);
+                if matches!(
+                    &loc,
+                    Location::Worn(slot)
+                        if item_wear_slot(&state.add_id, stats) != Some(slot.as_str())
+                ) {
+                    loc = Location::Slot(0);
+                }
+                location_combo(
+                    ui,
+                    "add_location",
+                    data,
+                    &mut loc,
+                    item_wear_slot(&state.add_id, stats),
+                    false,
+                    names.interface_language,
+                );
                 state.add_location = Some(loc);
-                if let Some(d) = catalog::item(&state.add_id).filter(|d| !d.wear_slot.is_empty())
-                    && ui.small_button(format!("Wear ({})", d.wear_slot)).clicked()
+                if let Some(slot) = item_wear_slot(&state.add_id, stats)
+                    && ui.small_button(format!("Wear ({slot})")).clicked()
                 {
-                    state.add_location = Some(Location::Worn(d.wear_slot.to_owned()));
+                    state.add_location = Some(Location::Worn(slot.to_owned()));
                 }
             });
             if let Some(loc) = &state.add_location {
                 let occupied = model::group_items(data).iter().any(|g| &g.location == loc);
                 ui.weak(if occupied {
-                    "The location is occupied: the item will be stored inside the held / worn item."
+                    names.text("The location is occupied: the item will be stored inside the held / worn item.").to_string()
                 } else {
-                    "The location is empty: the item will be held / worn."
+                    names.text("The location is empty: the item will be held / worn.").to_string()
                 });
             }
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(!state.add_id.trim().is_empty(), egui::Button::new("➕ Add"))
+                    .add_enabled(
+                        !state.add_id.trim().is_empty(),
+                        egui::Button::new(format!("➕ {}", names.text("Add"))),
+                    )
                     .clicked()
                 {
-                    changed |= do_add(data, state);
+                    changed |= do_add(data, state, stats);
                 }
-                if ui.button("Close").clicked() {
+                if ui.button(names.text("Close").to_string()).clicked() {
                     close = true;
                 }
             });
@@ -886,8 +1073,18 @@ fn add_window(ui: &mut Ui, data: &mut Value, names: Names, state: &mut Inventory
     changed
 }
 
-fn do_add(data: &mut Value, state: &mut InventoryState) -> bool {
-    let loc = state.add_location.clone().unwrap_or(Location::Slot(0));
+fn do_add(
+    data: &mut Value,
+    state: &mut InventoryState,
+    stats: &HashMap<String, ItemStats>,
+) -> bool {
+    let mut loc = state.add_location.clone().unwrap_or(Location::Slot(0));
+    if matches!(
+        &loc,
+        Location::Worn(slot) if item_wear_slot(state.add_id.trim(), stats) != Some(slot.as_str())
+    ) {
+        loc = Location::Slot(0);
+    }
     let item = model::new_item(state.add_id.trim(), &loc);
     match model::add_item(data, item, json!({})) {
         Some(i) => {
@@ -906,5 +1103,79 @@ mod tests {
     fn component_names_are_shortened() {
         assert_eq!(component_short_name(WATER), "WaterContainerItem");
         assert_eq!(component_short_name("Foo"), "Foo");
+    }
+
+    #[test]
+    fn location_choices_only_offer_the_supported_wear_slot() {
+        let data = json!({
+            "items": [
+                {"id": "coat", "slot": -1, "wearSlot": "torso"}
+            ]
+        });
+        let choices = location_choices(&data, Some("head"), &Location::Slot(0), false);
+        assert!(choices.contains(&Location::Worn("head".to_owned())));
+        assert!(!choices.contains(&Location::Worn("torso".to_owned())));
+    }
+
+    #[test]
+    fn existing_incompatible_wear_slot_remains_visible_for_repair() {
+        let data = json!({
+            "items": [
+                {"id": "coat", "slot": -1, "wearSlot": "torso"}
+            ]
+        });
+        let current = Location::Worn("torso".to_owned());
+        let choices = location_choices(&data, Some("head"), &current, true);
+        assert!(choices.contains(&current));
+        assert!(choices.contains(&Location::Worn("head".to_owned())));
+    }
+
+    #[test]
+    fn synced_nonwearable_stats_override_catalogue_wear_slots() {
+        let item = catalog::ITEMS
+            .iter()
+            .find(|item| !item.wear_slot.is_empty())
+            .unwrap();
+        let stats = HashMap::from([(
+            item.id.to_owned(),
+            ItemStats {
+                category: item.category.to_owned(),
+                weight: 0.0,
+                scale_weight_with_condition: false,
+                wearable: false,
+                wear_slot: None,
+                armor: None,
+                insulation: None,
+                container_encumbrance: None,
+            },
+        )]);
+        assert_eq!(item_wear_slot(item.id, &stats), None);
+    }
+
+    #[test]
+    fn adding_an_item_does_not_keep_an_incompatible_wear_slot() {
+        let mut data = json!({"items": []});
+        let mut state = InventoryState {
+            add_id: "cap".to_owned(),
+            add_location: Some(Location::Worn("torso".to_owned())),
+            ..Default::default()
+        };
+        let stats = HashMap::from([(
+            "cap".to_owned(),
+            ItemStats {
+                category: "wearable".to_owned(),
+                weight: 1.0,
+                scale_weight_with_condition: false,
+                wearable: true,
+                wear_slot: Some("head".to_owned()),
+                armor: None,
+                insulation: None,
+                container_encumbrance: None,
+            },
+        )]);
+
+        assert!(do_add(&mut data, &mut state, &stats));
+        assert_eq!(data["items"][0]["slot"], 0);
+        assert_eq!(data["items"][0]["wearSlot"], Value::Null);
     }
 }

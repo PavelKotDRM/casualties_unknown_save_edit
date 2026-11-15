@@ -14,22 +14,29 @@ pub fn format_duration(seconds: f64) -> String {
     format!("{}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
 }
 
-fn label(ui: &mut Ui, text: &str, help: &str) {
+fn label(ui: &mut Ui, names: Names, text: &str, help: &str) {
     ui.add_sized(
         [LABEL_WIDTH, ui.spacing().interact_size.y],
-        egui::Label::new(text),
+        egui::Label::new(names.text(text).to_string()),
     )
     .on_hover_text(help);
 }
 
-fn flag(ui: &mut Ui, root: &mut Map<String, Value>, key: &str, text: &str, help: &str) -> bool {
+fn flag(
+    ui: &mut Ui,
+    names: Names,
+    root: &mut Map<String, Value>,
+    key: &str,
+    text: &str,
+    help: &str,
+) -> bool {
     let Some(mut b) = get_bool(root, key) else {
         return false;
     };
     let mut changed = false;
     ui.horizontal(|ui| {
-        label(ui, text, help);
-        let text = if b { "Yes" } else { "No" };
+        label(ui, names, text, help);
+        let text = names.text(if b { "Yes" } else { "No" }).to_string();
         if ui.checkbox(&mut b, text).changed() {
             json::set_bool(root, key, b);
             changed = true;
@@ -40,6 +47,7 @@ fn flag(ui: &mut Ui, root: &mut Map<String, Value>, key: &str, text: &str, help:
 
 fn number(
     ui: &mut Ui,
+    names: Names,
     root: &mut Map<String, Value>,
     key: &str,
     text: &str,
@@ -51,7 +59,7 @@ fn number(
     };
     let mut changed = false;
     ui.horizontal(|ui| {
-        label(ui, text, help);
+        label(ui, names, text, help);
         changed = number_editor(ui, slot, speed);
     });
     changed
@@ -66,12 +74,17 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
-            section_heading(ui, "🗺", "Run progress");
+            section_heading(ui, names, "🗺", "Run progress");
             card(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if let Some(slot) = root.get_mut("biome") {
                     ui.horizontal(|ui| {
-                        label(ui, "Layer", "Layer index the run resumes on (`biome`).");
+                        label(
+                            ui,
+                            names,
+                            "Layer",
+                            "Layer index the run resumes on (`biome`).",
+                        );
                         changed |= number_editor(ui, slot, 0.05);
                         ui.label(
                             RichText::new(names.layer(slot.as_i64().unwrap_or(0)))
@@ -81,13 +94,19 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
                 }
                 if let Some(slot) = root.get_mut("runTime") {
                     ui.horizontal(|ui| {
-                        label(ui, "Run time (s)", "Total time of the run in seconds.");
+                        label(
+                            ui,
+                            names,
+                            "Run time (s)",
+                            "Total time of the run in seconds.",
+                        );
                         changed |= number_editor(ui, slot, 1.0);
                         ui.weak(format_duration(slot.as_f64().unwrap_or(0.0)));
                     });
                 }
                 changed |= number(
                     ui,
+                    names,
                     root,
                     "totalTraveled",
                     "Distance traveled",
@@ -96,6 +115,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
                 );
                 changed |= number(
                     ui,
+                    names,
                     root,
                     "endlessLoops",
                     "Endless loops",
@@ -104,6 +124,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
                 );
                 changed |= number(
                     ui,
+                    names,
                     root,
                     "caloriesConsumed",
                     "Calories consumed",
@@ -112,6 +133,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
                 );
                 changed |= number(
                     ui,
+                    names,
                     root,
                     "trapRarity",
                     "Trap rarity",
@@ -120,6 +142,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
                 );
                 changed |= number(
                     ui,
+                    names,
                     root,
                     "lootRarity",
                     "Loot rarity",
@@ -128,6 +151,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
                 );
                 changed |= flag(
                     ui,
+                    names,
                     root,
                     "isMercRun",
                     "Mercenary run",
@@ -135,6 +159,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
                 );
                 changed |= flag(
                     ui,
+                    names,
                     root,
                     "cheatedSave",
                     "Cheated save",
@@ -148,18 +173,18 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
                 }
             });
 
-            section_heading(ui, "⚙", "Run settings");
+            section_heading(ui, names, "⚙", "Run settings");
             if let Some(Value::Array(settings)) = root.get_mut("runSettings") {
                 changed |= run_settings(ui, settings, names);
             } else {
-                ui.weak("No run settings in this save.");
+                ui.weak(names.text("No run settings in this save.").to_string());
             }
 
-            section_heading(ui, "🙂", "Mood history");
+            section_heading(ui, names, "🙂", "Mood history");
             if let Some(Value::Array(mood)) = root.get_mut("lastHappiness") {
                 card(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    changed |= mood_chart(ui, mood);
+                    changed |= mood_chart(ui, mood, names);
                 });
             }
 
@@ -168,7 +193,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
                 .and_then(|r| r.get_mut("saved"))
             {
                 ui.add_space(6.0);
-                changed |= recipes(ui, saved);
+                changed |= recipes(ui, saved, names);
             }
         });
     changed
@@ -214,10 +239,14 @@ fn setting_editor(ui: &mut Ui, id: &str, slot: &mut Value, names: Names) -> bool
                 _ => 0,
             };
             egui::ComboBox::from_id_salt(("runset", id))
-                .selected_text(names.run_setting_option(id, value as usize))
+                .selected_text(names.text(&names.run_setting_option(id, value as usize)))
                 .show_ui(ui, |ui| {
                     for i in 0..count {
-                        ui.selectable_value(&mut value, i as i64, names.run_setting_option(id, i));
+                        ui.selectable_value(
+                            &mut value,
+                            i as i64,
+                            names.text(&names.run_setting_option(id, i)),
+                        );
                     }
                 });
             if value != current {
@@ -254,7 +283,7 @@ fn run_settings(ui: &mut Ui, settings: &mut [Value], names: Names) -> bool {
             continue;
         }
         egui::CollapsingHeader::new(
-            RichText::new(format!("{section} ({})", members.len())).strong(),
+            RichText::new(format!("{} ({})", names.text(section), members.len())).strong(),
         )
         .id_salt(("runsection", section))
         .default_open(true)
@@ -274,7 +303,8 @@ fn run_settings(ui: &mut Ui, settings: &mut [Value], names: Names) -> bool {
                             .to_owned();
                         let mut resp = ui.add_sized(
                             [LABEL_WIDTH + 60.0, ui.spacing().interact_size.y],
-                            egui::Label::new(names.run_setting(&id)).truncate(),
+                            egui::Label::new(names.text(&names.run_setting(&id)).to_string())
+                                .truncate(),
                         );
                         if let Some(desc) = names.run_setting_description(&id) {
                             resp = resp.on_hover_text(desc);
@@ -293,7 +323,7 @@ fn run_settings(ui: &mut Ui, settings: &mut [Value], names: Names) -> bool {
 
 /// Line chart of `lastHappiness` with editable points (drag a point
 /// vertically to change it).
-fn mood_chart(ui: &mut Ui, mood: &mut [Value]) -> bool {
+fn mood_chart(ui: &mut Ui, mood: &mut [Value], names: Names) -> bool {
     let mut changed = false;
     let values: Vec<f64> = mood.iter().map(|v| v.as_f64().unwrap_or(0.0)).collect();
     let extent = values.iter().fold(5.0f64, |m, v| m.max(v.abs() * 1.2));
@@ -350,7 +380,11 @@ fn mood_chart(ui: &mut Ui, mood: &mut [Value]) -> bool {
         json::set_number_preserving(&mut mood[i], v);
         changed = true;
     }
-    response.on_hover_text("Recent mood samples (oldest → newest). Drag points to edit.");
+    response.on_hover_text(
+        names
+            .text("Recent mood samples (oldest → newest). Drag points to edit.")
+            .to_string(),
+    );
     ui.horizontal_wrapped(|ui| {
         for slot in mood.iter_mut() {
             changed |= number_editor(ui, slot, 0.05);
@@ -359,7 +393,7 @@ fn mood_chart(ui: &mut Ui, mood: &mut [Value]) -> bool {
     changed
 }
 
-fn recipes(ui: &mut Ui, saved: &mut [Value]) -> bool {
+fn recipes(ui: &mut Ui, saved: &mut [Value], names: Names) -> bool {
     let mut changed = false;
     let known = saved
         .iter()
@@ -367,19 +401,23 @@ fn recipes(ui: &mut Ui, saved: &mut [Value]) -> bool {
         .count();
     egui::CollapsingHeader::new(
         RichText::new(format!(
-            "📜 Saved recipe data ({known} / {} marked)",
-            saved.len()
+            "📜 {} ({known} / {} {})",
+            names.text("Saved recipe data"),
+            saved.len(),
+            names.text("marked")
         ))
         .strong(),
     )
     .id_salt("recipes")
     .show(ui, |ui| {
         ui.weak(
-            "`savedRecipeData.saved`: per-recipe flag (Item1) and value (Item2), in game order.",
+            names
+                .text("`savedRecipeData.saved`: per-recipe flag (Item1) and value (Item2), in game order.")
+                .to_string(),
         );
         ui.horizontal(|ui| {
             for (text, value) in [("Mark all", true), ("Unmark all", false)] {
-                if ui.button(text).clicked() {
+                if ui.button(names.text(text).to_string()).clicked() {
                     for r in saved.iter_mut().filter_map(Value::as_object_mut) {
                         json::set_bool(r, "Item1", value);
                     }

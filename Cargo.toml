@@ -5,12 +5,14 @@ edition = "2024"
 
 [dependencies]
 chrono = "0.4"
+dotscope = { version = "0.9.1", default-features = false }
 dirs = "7"
 eframe = "0.37"
 egui = "0.37"
 flate2 = "1"
 rfd = "0.18"
 serde_json = { version = "1", features = ["preserve_order"] }
+unity-rs-core = "0.6.2"
 
 [dev-dependencies]
 tempfile = "3"

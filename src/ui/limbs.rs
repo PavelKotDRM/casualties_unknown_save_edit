@@ -253,12 +253,12 @@ fn fracture_mark(painter: &egui::Painter, r: Rect) {
 }
 
 /// Legend explaining the figure's markers.
-pub fn legend(ui: &mut Ui) {
+pub fn legend(ui: &mut Ui, names: Names) {
     let item = |ui: &mut Ui, paint: &dyn Fn(&egui::Painter, Rect), text: &str| {
         ui.horizontal(|ui| {
             let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
             paint(ui.painter(), r);
-            ui.small(text);
+            ui.small(names.text(text).to_string());
         });
     };
     item(
@@ -340,13 +340,26 @@ fn heal_button(ui: &mut Ui, data: &mut Value, label: &str, regrow: bool) -> bool
 pub fn show(ui: &mut Ui, data: &mut Value, names: Names, state: &mut LimbsState) -> bool {
     let mut changed = false;
     let Some(limbs) = data.get("limbs").and_then(Value::as_array).cloned() else {
-        ui.colored_label(colors::BAD, "This save has no `limbs` array.");
+        ui.colored_label(
+            colors::BAD,
+            names.text("This save has no `limbs` array.").to_string(),
+        );
         return false;
     };
     state.selected = state.selected.min(limbs.len().saturating_sub(1));
     ui.horizontal(|ui| {
-        changed |= heal_button(ui, data, "✚ Heal all limbs", false);
-        changed |= heal_button(ui, data, "✚ Heal all + regrow dismembered", true);
+        changed |= heal_button(
+            ui,
+            data,
+            &format!("✚ {}", names.text("Heal all limbs")),
+            false,
+        );
+        changed |= heal_button(
+            ui,
+            data,
+            &format!("✚ {}", names.text("Heal all + regrow dismembered")),
+            true,
+        );
     });
     ui.separator();
     ui.horizontal_top(|ui| {
@@ -356,7 +369,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names, state: &mut LimbsState)
                 state.selected = i;
             }
             ui.add_space(6.0);
-            legend(ui);
+            legend(ui, names);
         });
         ui.separator();
         egui::ScrollArea::vertical()
@@ -401,7 +414,10 @@ fn limb_editor(ui: &mut Ui, data: &mut Value, names: Names, state: &mut LimbsSta
         return false;
     };
     ui.horizontal(|ui| {
-        if ui.button("✚ Heal this limb").clicked() {
+        if ui
+            .button(format!("✚ {}", names.text("Heal this limb")))
+            .clicked()
+        {
             model::heal_limb(limb, true);
             changed = true;
         }
@@ -409,12 +425,12 @@ fn limb_editor(ui: &mut Ui, data: &mut Value, names: Names, state: &mut LimbsSta
     super::card(ui, |ui| {
         ui.set_width(ui.available_width());
         for spec in schema::LIMB_FIELDS {
-            changed |= field_row(ui, spec, limb, 240.0);
+            changed |= field_row(ui, spec, limb, 240.0, names);
         }
     });
     if let Some(Value::Object(p)) = limb.get_mut("prostheticInfo") {
         ui.add_space(6.0);
-        egui::CollapsingHeader::new("🦾 Prosthetic")
+        egui::CollapsingHeader::new(format!("🦾 {}", names.text("Prosthetic")))
             .id_salt("prosthetic")
             .default_open(p.get("hasProsthetic").and_then(Value::as_bool) == Some(true))
             .show(ui, |ui| {
@@ -424,7 +440,11 @@ fn limb_editor(ui: &mut Ui, data: &mut Value, names: Names, state: &mut LimbsSta
                         changed |= super::generic_row(ui, &k, v);
                     }
                 }
-                ui.weak("Prosthetic item ids: peglimb, steelprosthesis, musharm …");
+                ui.weak(
+                    names
+                        .text("Prosthetic item ids: peglimb, steelprosthesis, musharm …")
+                        .to_string(),
+                );
             });
     }
     let known = |k: &str| schema::limb_field(k).is_some() || k == "prostheticInfo";
@@ -436,7 +456,7 @@ fn limb_table(ui: &mut Ui, data: &Value, names: Names, state: &mut LimbsState) {
     let Some(limbs) = data.get("limbs").and_then(Value::as_array) else {
         return;
     };
-    egui::CollapsingHeader::new("All limbs overview")
+    egui::CollapsingHeader::new(names.text("All limbs overview").to_string())
         .default_open(true)
         .show(ui, |ui| {
             egui::Grid::new("limb_table")
@@ -452,7 +472,7 @@ fn limb_table(ui: &mut Ui, data: &Value, names: Names, state: &mut LimbsState) {
                         "Infection",
                         "Status",
                     ] {
-                        ui.strong(h);
+                        ui.strong(names.text(h).to_string());
                     }
                     ui.end_row();
                     for (i, limb) in limbs.iter().enumerate() {

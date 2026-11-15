@@ -3,24 +3,32 @@
 use egui::Ui;
 use serde_json::Value;
 
-use super::{card, colors, field_row, other_fields, section_heading};
+use super::{Names, card, colors, field_row, other_fields, section_heading};
 use crate::{model, schema};
 
 /// Shows the health tab. Returns `true` if the document changed.
-pub fn show(ui: &mut Ui, data: &mut Value) -> bool {
+pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         if ui
-            .button("❤ Restore vitals")
-            .on_hover_text("Blood, oxygen, heart, consciousness, shock, sickness, temperature…")
+            .button(format!("❤ {}", names.text("Restore vitals")))
+            .on_hover_text(
+                names
+                    .text("Blood, oxygen, heart, consciousness, shock, sickness, temperature…")
+                    .to_string(),
+            )
             .clicked()
         {
             model::restore_vitals(data);
             changed = true;
         }
         if ui
-            .button("🍖 Fill needs")
-            .on_hover_text("Food, water, stamina, energy; clean and dry")
+            .button(format!("🍖 {}", names.text("Fill needs")))
+            .on_hover_text(
+                names
+                    .text("Food, water, stamina, energy; clean and dry")
+                    .to_string(),
+            )
             .clicked()
         {
             model::fill_needs(data);
@@ -29,7 +37,10 @@ pub fn show(ui: &mut Ui, data: &mut Value) -> bool {
     });
     ui.separator();
     let Some(body) = data.get_mut("body").and_then(Value::as_object_mut) else {
-        ui.colored_label(colors::BAD, "This save has no `body` object.");
+        ui.colored_label(
+            colors::BAD,
+            names.text("This save has no `body` object.").to_string(),
+        );
         return changed;
     };
     egui::ScrollArea::vertical()
@@ -38,11 +49,11 @@ pub fn show(ui: &mut Ui, data: &mut Value) -> bool {
             let two_columns = ui.available_width() > 1000.0;
             let bar = if two_columns { 180.0 } else { 260.0 };
             let mut render_group = |ui: &mut Ui, group: &schema::FieldGroup| {
-                section_heading(ui, group.icon, group.title);
+                section_heading(ui, names, group.icon, group.title);
                 card(ui, |ui| {
                     ui.set_width(ui.available_width());
                     for spec in group.fields {
-                        changed |= field_row(ui, spec, body, bar);
+                        changed |= field_row(ui, spec, body, bar, names);
                     }
                 });
                 ui.add_space(6.0);
