@@ -81,16 +81,50 @@ pub(super) fn details(
             item_stats.container_max_item_weight,
             item_stats.container_encumbrance,
         ) {
+            let space = model::container_space(data, index, stats);
+            let (space_text, space_color) = match space {
+                Some(space) if space.complete => {
+                    let mut text = format!(
+                        "{} {:.2} / {:.2} u",
+                        names.text("Capacity remaining:"),
+                        space.remaining,
+                        space.capacity,
+                    );
+                    if space.over_capacity > 0.0 {
+                        let over = format!("{:.2}", space.over_capacity);
+                        text.push_str(" · ");
+                        text.push_str(
+                            &names
+                                .text("Over capacity by {weight} u")
+                                .replace("{weight}", &over),
+                        );
+                    }
+                    (
+                        text,
+                        if space.over_capacity > 0.0 {
+                            colors::BAD
+                        } else {
+                            colors::NEUTRAL
+                        },
+                    )
+                }
+                _ => (
+                    format!(
+                        "{} — / {:.2} u",
+                        names.text("Capacity remaining:"),
+                        capacity,
+                    ),
+                    colors::WARN,
+                ),
+            };
+            ui.colored_label(space_color, space_text).on_hover_text(names.text("Remaining capacity is maximum weight minus the full weight of stored items; encumbrance reduction affects carried load, not storage capacity.").to_string());
             ui.weak(format!(
-                "{} {:.2} u · {} {:.2} u · {} {:.0}%",
-                names.text("Capacity:"),
-                capacity,
+                "{} {:.2} u · {} {:.0}%",
                 names.text("Max weight/item:"),
                 max_item_weight,
                 names.text("Encumbrance reduction:"),
                 (1.0 - multiplier) * 100.0,
-            ))
-            .on_hover_text(names.text("Capacity and per-item weight limit what the game can store. Existing contents are still counted; the encumbrance reduction changes their contribution to carried load.").to_string());
+            ));
         }
         if item_stats.liquid_capacity.is_some() {
             if let (Some(liquid), Some(physical)) = (weights.liquid, weights.physical) {

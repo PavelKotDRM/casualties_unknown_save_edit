@@ -510,6 +510,14 @@ mod tests {
             InterfaceLanguage::Russian.text("⚠ Character is overburdened."),
             "⚠ Персонаж перегружен."
         );
+        assert_eq!(
+            InterfaceLanguage::Russian.text("Capacity remaining:"),
+            "Остаток вместимости:"
+        );
+        assert_eq!(
+            InterfaceLanguage::Russian.text("Over capacity by {weight} u"),
+            "Превышение вместимости на {weight} u"
+        );
     }
 
     #[test]

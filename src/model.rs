@@ -93,6 +93,15 @@ pub struct PhysicalLoad {
     pub complete: bool,
 }
 
+/// Remaining container capacity in game units (`u`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ContainerSpace {
+    pub capacity: f32,
+    pub remaining: f32,
+    pub over_capacity: f32,
+    pub complete: bool,
+}
+
 /// Compute game and estimated physical weights from the item and its saved components.
 pub fn item_weights(data: &Value, index: usize, stats: &HashMap<String, ItemStats>) -> ItemWeights {
     let unknown = ItemWeights {
@@ -177,6 +186,48 @@ pub fn physical_load(data: &Value, stats: &HashMap<String, ItemStats>) -> Physic
         }
     }
     load
+}
+
+/// Compute remaining storage capacity from the full, unmodified weight of the contents.
+pub fn container_space(
+    data: &Value,
+    index: usize,
+    stats: &HashMap<String, ItemStats>,
+) -> Option<ContainerSpace> {
+    let item = items(data).get(index)?;
+    let id = item.get("id").and_then(Value::as_str)?;
+    let capacity = stats.get(id)?.container_capacity?;
+    if !capacity.is_finite() || capacity < 0.0 {
+        return None;
+    }
+
+    let group = group_items(data)
+        .into_iter()
+        .find(|group| group.indices.first() == Some(&index))?;
+    let mut used = 0.0;
+    let mut complete = true;
+    for &child_index in group.indices.iter().skip(1) {
+        let weight = item_weights(data, child_index, stats);
+        complete &= weight.game_complete;
+        if let Some(value) = weight.game.filter(|value| value.is_finite()) {
+            if (used + value).is_finite() {
+                used += value;
+            } else {
+                complete = false;
+            }
+        } else {
+            complete = false;
+        }
+    }
+
+    let remaining = (capacity - used).max(0.0);
+    let over_capacity = (used - capacity).max(0.0);
+    Some(ContainerSpace {
+        capacity,
+        remaining,
+        over_capacity,
+        complete,
+    })
 }
 
 const DEFAULT_ENCUMBRANCE_CAP: f64 = 1.0;
@@ -623,6 +674,39 @@ mod tests {
         assert_eq!(load.weight, 3.0);
         assert_eq!(load.capacity, 13.5);
         assert!(load.complete);
+    }
+
+    #[test]
+    fn container_space_uses_unmodified_contents_and_reports_overflow() {
+        let data = json!({
+            "items": [
+                {"id": "bag", "slot": 0},
+                {"id": "rock", "slot": 0},
+                {"id": "tool", "slot": 0}
+            ]
+        });
+        let mut bag = item_stats(1.0, Some(0.25));
+        bag.container_capacity = Some(8.0);
+        let mut stats = HashMap::from([
+            ("bag".to_owned(), bag.clone()),
+            ("rock".to_owned(), item_stats(2.0, None)),
+            ("tool".to_owned(), item_stats(3.0, None)),
+        ]);
+
+        let space = container_space(&data, 0, &stats).unwrap();
+        assert_eq!(space.remaining, 3.0);
+        assert_eq!(space.over_capacity, 0.0);
+        assert!(space.complete);
+
+        bag.container_capacity = Some(4.0);
+        stats.insert("bag".to_owned(), bag);
+        let space = container_space(&data, 0, &stats).unwrap();
+        assert_eq!(space.remaining, 0.0);
+        assert_eq!(space.over_capacity, 1.0);
+
+        stats.remove("tool");
+        let space = container_space(&data, 0, &stats).unwrap();
+        assert!(!space.complete);
     }
 
     #[test]

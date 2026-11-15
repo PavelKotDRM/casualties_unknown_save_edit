@@ -53,9 +53,11 @@ weight units (`u`): item weights are combined with container encumbrance
 multipliers, and liquid items scale with their fill level. Container capacity
 and maximum item weight are storage limits; they do not clamp the carried
 weight of contents already present in a save. These limits and the encumbrance
-reduction are shown in each container's details. **Physical weight** is a
-separate rough approximation: liquids are treated as 1 kg per litre (regardless
-of type), and game weight units are treated as kilograms for empty item weight.
+reduction are shown in each container's details. Capacity is shown as remaining
+weight over the maximum, based on the full weight of stored items. **Physical
+weight** is a separate rough approximation: liquids are treated as 1 kg per
+litre (regardless of type), and game weight units are treated as kilograms for
+empty item weight.
 This estimate does not apply storage multipliers and is not the game's
 encumbrance value. Missing or invalid liquid component data is marked
 incomplete rather than assumed empty; the game may use default contents when

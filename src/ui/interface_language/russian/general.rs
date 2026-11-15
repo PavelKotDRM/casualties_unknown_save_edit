@@ -8,12 +8,13 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
                 "Игровая нагрузка отображается в игровых единицах (u). Вместимость и лимит веса предмета определяют, что можно хранить; коэффициент контейнера уменьшает вклад содержимого. Вес ёмкостей зависит от их наполненности.",
             )
         }
-        "Capacity:" => Some("Вместимость:"),
+        "Capacity remaining:" => Some("Остаток вместимости:"),
         "Max weight/item:" => Some("Макс. вес предмета:"),
         "Encumbrance reduction:" => Some("Снижение нагрузки:"),
-        "Capacity and per-item weight limit what the game can store. Existing contents are still counted; the encumbrance reduction changes their contribution to carried load." => {
+        "Over capacity by {weight} u" => Some("Превышение вместимости на {weight} u"),
+        "Remaining capacity is maximum weight minus the full weight of stored items; encumbrance reduction affects carried load, not storage capacity." => {
             Some(
-                "Вместимость и лимит веса предмета ограничивают допустимое содержимое. Уже сохранённые предметы всё равно учитываются; снижение нагрузки меняет их вклад в общий вес.",
+                "Остаток вместимости равен максимальному весу за вычетом полного веса хранящихся предметов; снижение нагрузки влияет на переносимый вес, но не на вместимость.",
             )
         }
         "Incomplete: item, container or liquid data is unavailable." => {
