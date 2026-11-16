@@ -2,9 +2,11 @@
 
 [![CI](https://github.com/PavelKotDRM/casualties_unknown_save_edit/actions/workflows/ci.yml/badge.svg)](https://github.com/PavelKotDRM/casualties_unknown_save_edit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Steam](https://img.shields.io/badge/Steam-Casualties%3A%20Unknown-1b2838?logo=steam)](https://store.steampowered.com/app/4576490/)
 
-A desktop save editor and wiki for **Casualties Unknown**, written in Rust with
-[egui](https://github.com/emilk/egui).
+A desktop save editor and wiki for
+[**Casualties: Unknown**](https://store.steampowered.com/app/4576490/) by
+Orsoniks, written in Rust with [egui](https://github.com/emilk/egui).
 
 The game stores its run in `save.sv`, which is gzip-compressed JSON. The editor
 opens it, makes a backup, and shows the data as game-like views: gauges, a
@@ -329,4 +331,12 @@ that need the game or a save are skipped otherwise.
 
 ## License
 
-[MIT](LICENSE)
+The editor's own code is licensed under [MIT](LICENSE).
+
+This is an unofficial fan-made tool. It is not affiliated with or endorsed by
+Orsoniks, Oro Interactive or Valve. *Casualties: Unknown* and its names, texts
+and assets belong to their respective owners. The repository and the release
+builds contain no game files: names, descriptions, item stats and effects are
+read at run time from the copy of the game installed on your computer. You need
+your own copy of the game, available on
+[Steam](https://store.steampowered.com/app/4576490/).
