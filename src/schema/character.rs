@@ -1,5 +1,33 @@
-/// Names of the playable characters (`character` field).
-pub const CHARACTERS: &[&str] = &["Experiment", "Character #1", "Character #2"];
+/// A playable character (`character` field / the game's `Body.charType`).
+#[derive(Debug, Clone, Copy)]
+pub struct CharacterDef {
+    /// English fallback name (locale `char<index>name`).
+    pub name: &'static str,
+    /// Starting STR, RES and INT levels (`Skills.BaseSkills`).
+    pub base_skills: [i64; 3],
+    /// STR, RES and INT experience gain multipliers (`Skills.BaseMultipliers`).
+    pub gain_multipliers: [f64; 3],
+}
+
+/// Playable characters in the game's order. Character `i > 0` is locked
+/// until a run is won as character `i - 1` (see [`crate::player_prefs`]).
+pub const CHARACTERS: [CharacterDef; 3] = [
+    CharacterDef {
+        name: "[SAW-01] \"Experiment\"",
+        base_skills: [9, 8, 7],
+        gain_multipliers: [1.0, 1.0, 1.0],
+    },
+    CharacterDef {
+        name: "[SAW-03] \"Milky\"",
+        base_skills: [4, 6, 12],
+        gain_multipliers: [0.5, 0.5, 1.0],
+    },
+    CharacterDef {
+        name: "[SAW-12] \"Dune\"",
+        base_skills: [17, 18, 0],
+        gain_multipliers: [1.0, 1.0, 0.5],
+    },
+];
 
 /// A body slot that holds an item (`items[].slot >= 0`).
 #[derive(Debug, Clone, Copy)]

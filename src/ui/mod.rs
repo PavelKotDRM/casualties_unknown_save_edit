@@ -4,6 +4,9 @@
 //! widgets shared between them: colour-coded gauges similar to the in-game
 //! health screen, field editors for JSON values and display-name lookup.
 
+pub mod about;
+pub mod achievements;
+pub mod backups;
 pub mod character;
 pub mod health;
 mod interface_language;
@@ -12,7 +15,9 @@ pub use interface_language::InterfaceLanguage;
 pub mod limbs;
 pub mod overview;
 pub mod raw;
+pub mod report;
 pub mod run;
+pub mod wiki;
 
 use egui::{
     Align2, Color32, CornerRadius, FontId, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
@@ -336,6 +341,25 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
         .inner
 }
 
+/// A resizable window that never grows past the main window; its content
+/// should use a [`egui::ScrollArea`] for anything taller than the screen.
+pub fn bounded_window<'open>(
+    ctx: &egui::Context,
+    title: impl Into<egui::WidgetText>,
+    default_size: Vec2,
+    min_width: f32,
+) -> egui::Window<'open> {
+    let screen = ctx.content_rect();
+    let max_size = (screen.size() - Vec2::splat(32.0)).max(Vec2::new(240.0, 200.0));
+    egui::Window::new(title)
+        .constrain_to(screen)
+        .resizable(true)
+        .default_size(default_size.min(max_size))
+        .min_width(min_width.min(max_size.x))
+        .min_height(240.0f32.min(max_size.y))
+        .max_size(max_size)
+}
+
 /// Display-name lookup that prefers the game's language file.
 #[derive(Clone, Copy)]
 pub struct Names<'a> {
@@ -419,6 +443,113 @@ impl Names<'_> {
             .unwrap_or(def.name)
             .to_owned();
         self.text(&name).into_owned()
+    }
+
+    /// Playable character name (`character` field), e.g. `[SAW-03] "Milky"`.
+    pub fn character(&self, character: i64) -> String {
+        let index = usize::try_from(character).ok();
+        index
+            .and_then(|i| {
+                self.locale
+                    .and_then(|l| l.other(&format!("char{i}name")))
+                    .map(strip_rich_text)
+                    .or_else(|| schema::CHARACTERS.get(i).map(|d| d.name.to_owned()))
+            })
+            .unwrap_or_else(|| {
+                self.text("Character #{index}")
+                    .replace("{index}", &character.to_string())
+            })
+    }
+
+    /// Character name, or a placeholder while the game still has it locked.
+    pub fn character_if_unlocked(
+        &self,
+        character: usize,
+        progress: &crate::player_prefs::GameProgress,
+    ) -> String {
+        if progress.is_unlocked(character) {
+            self.character(character as i64)
+        } else {
+            format!(
+                "🔒 {}",
+                self.text("Character #{index}")
+                    .replace("{index}", &character.to_string())
+            )
+        }
+    }
+
+    /// Layer name, or a placeholder until the player has descended to it.
+    pub fn layer_if_reached(
+        &self,
+        biome: i64,
+        progress: &crate::player_prefs::GameProgress,
+    ) -> String {
+        if progress.is_layer_reached(biome) {
+            self.layer(biome)
+        } else {
+            format!(
+                "🔒 {}",
+                self.text("Layer {number}")
+                    .replace("{number}", &(biome + 1).to_string())
+            )
+        }
+    }
+
+    /// Ending name with the case status of its end screen, e.g.
+    /// `Escape — MORE INFO AT MEETING`.
+    pub fn ending(&self, index: usize) -> String {
+        let Some(def) = schema::ENDINGS.get(index) else {
+            return self.ending_placeholder(index);
+        };
+        let status = self
+            .locale
+            .and_then(|l| l.other(def.status_key))
+            .map(strip_rich_text)
+            .unwrap_or_else(|| def.status.to_owned());
+        format!("{} — {status}", self.text(def.name))
+    }
+
+    /// Ending name, or a placeholder until the player has reached it.
+    pub fn ending_if_discovered(
+        &self,
+        index: usize,
+        progress: &crate::player_prefs::GameProgress,
+    ) -> String {
+        if progress.is_ending_discovered(index) {
+            self.ending(index)
+        } else {
+            format!("🔒 {}", self.ending_placeholder(index))
+        }
+    }
+
+    fn ending_placeholder(&self, index: usize) -> String {
+        self.text("Ending #{number}")
+            .replace("{number}", &(index + 1).to_string())
+    }
+
+    /// Dossier of a character (`char<i>desc`) from the game's language file.
+    pub fn character_description(&self, character: usize) -> Option<String> {
+        self.locale
+            .and_then(|l| l.other(&format!("char{character}desc")))
+            .map(strip_rich_text)
+    }
+
+    /// Quirks of a character (`char<i>quirks`) from the game's language file.
+    pub fn character_quirks(&self, character: usize) -> Option<String> {
+        self.locale
+            .and_then(|l| l.other(&format!("char{character}quirks")))
+            .map(strip_rich_text)
+    }
+
+    /// Requirement shown by the game for a locked character.
+    pub fn character_unlock_requirement(&self) -> String {
+        self.locale
+            .and_then(|l| l.other("characterunlockdsc"))
+            .map(strip_rich_text)
+            .unwrap_or_else(|| {
+                self.text("Finish a run with the previous character to unlock")
+                    .into_owned()
+            })
     }
 
     /// Hold slot display name (`items[].slot`), e.g. right hand or mouth.
@@ -508,6 +639,67 @@ mod tests {
         assert_eq!(quality(pain, 100.0), Some(0.0));
         let hr = schema::body_field("heartRate").unwrap();
         assert!(quality(hr, 70.0).unwrap() > quality(hr, 180.0).unwrap());
+    }
+
+    #[test]
+    fn bounded_window_fits_a_small_screen_and_scrolls_with_the_wheel() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(800.0, 500.0));
+        let frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let mut measured = (egui::Rect::NOTHING, egui::Rect::NOTHING, Vec2::ZERO);
+            let mut output = ctx.run_ui(input, |ui| {
+                let ctx = ui.ctx().clone();
+                let shown =
+                    bounded_window(&ctx, "test", Vec2::new(760.0, 680.0), 540.0).show(&ctx, |ui| {
+                        let out = egui::ScrollArea::vertical()
+                            .auto_shrink(false)
+                            .max_height(ui.available_height() - 40.0)
+                            .show(ui, |ui| {
+                                for i in 0..200 {
+                                    ui.label(format!("row {i}"));
+                                }
+                            });
+                        measured.1 = out.inner_rect;
+                        measured.2 = out.state.clamped_offset();
+                        ui.separator();
+                        ui.button("footer")
+                    });
+                measured.0 = shown.unwrap().response.rect;
+            });
+            output.textures_delta.clear();
+            measured
+        };
+        for _ in 0..2 {
+            frame(Vec::new());
+        }
+        let (window_rect, scroll_rect, offset) = frame(Vec::new());
+        assert!(
+            screen.contains_rect(window_rect),
+            "{window_rect:?} leaves {screen:?}"
+        );
+        assert_eq!(offset.y, 0.0);
+        frame(vec![
+            egui::Event::PointerMoved(scroll_rect.center()),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(0.0, -300.0),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        let mut measured = frame(Vec::new());
+        for _ in 0..30 {
+            measured = frame(Vec::new());
+        }
+        let (window_rect, _, offset) = measured;
+        assert!(offset.y > 0.0, "the wheel did not scroll the content");
+        assert!(screen.contains_rect(window_rect));
     }
 
     #[test]

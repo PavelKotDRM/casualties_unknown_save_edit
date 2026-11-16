@@ -212,6 +212,7 @@ fn holder_location_allowed(data: &Value, location: &Location, holder: HolderRule
     }
 }
 
+#[allow(clippy::too_many_arguments)] // independent pieces of UI state
 fn location_combo(
     ui: &mut Ui,
     id: &str,

@@ -165,6 +165,7 @@ pub(super) fn add_window(
     changed
 }
 
+#[allow(clippy::too_many_arguments)] // independent pieces of UI state
 fn add_location_combo(
     ui: &mut Ui,
     id: &str,

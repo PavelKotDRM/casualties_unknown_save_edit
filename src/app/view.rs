@@ -92,9 +92,10 @@ impl EditorApp {
                     ui.close();
                 }
                 ui.separator();
+                let target_exists = self.backup_target().is_some_and(|p| p.is_file());
                 if ui
                     .add_enabled(
-                        loaded,
+                        target_exists,
                         egui::Button::new(format!("🗄 {}", language.text("Create backup now"))),
                     )
                     .clicked()
@@ -103,16 +104,10 @@ impl EditorApp {
                     ui.close();
                 }
                 if ui
-                    .add_enabled(
-                        loaded,
-                        egui::Button::new(format!("🗄 {}", language.text("Backups…"))),
-                    )
+                    .button(format!("🗄 {}", language.text("Backups…")))
                     .clicked()
                 {
-                    self.backups_open = true;
-                    if let Some(s) = &self.save {
-                        self.backups = save::list_backups(&s.path);
-                    }
+                    self.open_backups();
                     ui.close();
                 }
                 if ui
@@ -215,14 +210,24 @@ impl EditorApp {
             ui.menu_button(language.text("Game data").to_string(), |ui| {
                 match &self.config.game_dir {
                     Some(d) => {
-                        ui.weak(format!("{} {}", language.text("Game folder:"), d.display()))
+                        ui.weak(format!("{} {}", language.text("Game folder:"), d.display()));
+                        ui::about::game_version_label(
+                            ui,
+                            Names {
+                                locale: self.locale.as_ref(),
+                                interface_language: language,
+                            },
+                            self.game_info.as_ref(),
+                        );
                     }
-                    None => ui.colored_label(
-                        colors::WARN,
-                        language
-                            .text("Game folder not found — showing ids")
-                            .to_string(),
-                    ),
+                    None => {
+                        ui.colored_label(
+                            colors::WARN,
+                            language
+                                .text("Game folder not found — showing ids")
+                                .to_string(),
+                        );
+                    }
                 };
                 ui.separator();
                 ui.label(language.text("Language of names:").to_string());
@@ -298,6 +303,34 @@ impl EditorApp {
                     }
                     ui.close();
                 }
+                ui.separator();
+                let mut auto = self.config.auto_refresh;
+                if ui
+                    .checkbox(&mut auto, language.text("Refresh data automatically").to_string())
+                    .on_hover_text(
+                        language
+                            .text("Every few seconds re-read the save on disk, unlocks, achievements, backups and the game installation")
+                            .to_string(),
+                    )
+                    .changed()
+                {
+                    self.config.auto_refresh = auto;
+                    if let Err(error) = self.config.store() {
+                        self.error("Could not save editor settings", error);
+                    }
+                }
+                if ui
+                    .add(
+                        egui::Button::new(format!("⟳ {}", language.text("Refresh now")))
+                            .shortcut_text("F5"),
+                    )
+                    .clicked()
+                {
+                    self.refresh_external();
+                    self.set_status(language.text("Data refreshed").to_string(), Level::Success);
+                    ui.close();
+                }
+                ui.separator();
                 if ui
                     .button(format!("🔍 {}", language.text("Detect automatically")))
                     .clicked()
@@ -319,6 +352,31 @@ impl EditorApp {
                 }
             });
             ui.menu_button(language.text("Help").to_string(), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(format!("📖 {}", language.text("Game wiki")))
+                            .shortcut_text("F1"),
+                    )
+                    .clicked()
+                {
+                    self.wiki.open = true;
+                    ui.close();
+                }
+                if ui
+                    .button(format!("🏆 {}", language.text("Achievements")))
+                    .clicked()
+                {
+                    self.achievements_ui.open = true;
+                    ui.close();
+                }
+                ui.separator();
+                if ui
+                    .button(format!("🐞 {}", language.text("Report a problem…")))
+                    .clicked()
+                {
+                    self.report.open_with("");
+                    ui.close();
+                }
                 if ui.button(format!("ℹ {}", language.text("About"))).clicked() {
                     self.about_open = true;
                     ui.close();
@@ -410,6 +468,7 @@ impl EditorApp {
                     );
                 }
             }
+            let mut report = None;
             if let Some((text, level, at)) = &self.status {
                 let color = match level {
                     Level::Info => ui.visuals().text_color(),
@@ -418,9 +477,32 @@ impl EditorApp {
                 };
                 if *level == Level::Error || at.elapsed() < Duration::from_secs(12) {
                     ui.separator();
+                    if *level == Level::Error
+                        && ui
+                            .small_button("🐞")
+                            .on_hover_text(language.text("Report this problem…").to_string())
+                            .clicked()
+                    {
+                        report = Some(text.clone());
+                    }
                     ui.colored_label(color, text).on_hover_text(text);
                 }
             }
+            if let Some(title) = report {
+                self.report.open_with(title);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")))
+                    .on_hover_text(language.text("Editor version").to_string());
+                ui::about::game_version_label(
+                    ui,
+                    Names {
+                        locale: self.locale.as_ref(),
+                        interface_language: language,
+                    },
+                    self.game_info.as_ref(),
+                );
+            });
         });
     }
 
@@ -434,6 +516,19 @@ impl EditorApp {
                 RichText::new(language.text("Casualties Unknown — Save Editor").to_string())
                     .size(28.0)
                     .strong(),
+            );
+            ui.weak(format!(
+                "{} v{}",
+                language.text("Editor"),
+                env!("CARGO_PKG_VERSION")
+            ));
+            ui::about::game_version_label(
+                ui,
+                Names {
+                    locale: self.locale.as_ref(),
+                    interface_language: language,
+                },
+                self.game_info.as_ref(),
             );
             ui.add_space(10.0);
             match save::default_save_path() {
@@ -460,6 +555,18 @@ impl EditorApp {
                 self.request(Pending::NewSave);
             }
             ui.add_space(6.0);
+            if ui.button(format!("📖 {}", language.text("Game wiki"))).clicked() {
+                self.wiki.open = true;
+            }
+            ui.add_space(6.0);
+            if ui.button(format!("🗄 {}", language.text("Backups…"))).clicked() {
+                self.open_backups();
+            }
+            ui.add_space(6.0);
+            if ui.button(format!("🏆 {}", language.text("Achievements"))).clicked() {
+                self.achievements_ui.open = true;
+            }
+            ui.add_space(6.0);
             ui.weak(language.text("A timestamped backup is created in SaveEditorBackups every time a save is opened.").to_string());
         });
     }
@@ -468,6 +575,17 @@ impl EditorApp {
         let pack = self.selected_interface_pack();
         let language =
             InterfaceLanguage::from_code(Some(&self.config.interface_language), pack.as_deref());
+        ui::wiki::show(
+            ctx,
+            &mut self.wiki,
+            Names {
+                locale: self.locale.as_ref(),
+                interface_language: language,
+            },
+            &self.item_stats,
+            &self.item_effects,
+            &self.progress,
+        );
         if let Some(pending) = self.pending.clone() {
             let mut choice = None;
             egui::Modal::new(egui::Id::unique("confirm_discard")).show(ctx, |ui| {
@@ -517,73 +635,57 @@ impl EditorApp {
             }
         }
 
-        if self.backups_open {
-            let mut open = true;
-            let mut restore = None;
-            let mut open_backup = None;
-            egui::Window::new(format!("🗄 {}", language.text("Backups")))
-                .open(&mut open)
-                .default_size([560.0, 360.0])
-                .show(ctx, |ui| {
-                    let Some(path) = self.save.as_ref().map(|s| s.path.clone()) else { return };
-                    let dir = save::backup_dir(&path);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(dir.display().to_string()).monospace());
-                        if ui.button(format!("📁 {}", language.text("Open folder"))).clicked() {
-                            let _ = std::fs::create_dir_all(&dir);
-                            Self::open_folder(&dir);
-                        }
-                        if ui.button(format!("➕ {}", language.text("Backup now"))).clicked() {
-                            self.manual_backup();
-                        }
-                    });
-                    ui.separator();
-                    if self.backups.is_empty() {
-                        ui.weak(language.text("No backups yet.").to_string());
-                    }
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        egui::Grid::new("backups").striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
-                            for b in &self.backups {
-                                let name = b.path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
-                                ui.label(RichText::new(name).monospace());
-                                let when = b.modified.map_or(String::from("?"), |t| {
-                                    chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M:%S").to_string()
-                                });
-                                ui.label(when);
-                                ui.label(format!("{:.1} KB", b.size as f64 / 1024.0));
-                                if ui.button(format!("⟲ {}", language.text("Restore"))).on_hover_text(language.text("Replace the current save with this backup (the current file is backed up first)").to_string()).clicked() {
-                                    restore = Some(b.path.clone());
-                                }
-                                if ui.button(format!("📂 {}", language.text("Open"))).on_hover_text(language.text("Open the backup itself for viewing/editing").to_string()).clicked() {
-                                    open_backup = Some(b.path.clone());
-                                }
-                                ui.end_row();
-                            }
-                        });
-                    });
-                });
-            self.backups_open = open;
-            if let Some(p) = restore {
-                self.request(Pending::RestoreBackup(p));
-            }
-            if let Some(p) = open_backup {
-                self.request(Pending::Open(p));
-            }
+        let current = self
+            .save
+            .as_ref()
+            .filter(|s| Some(s.path.as_path()) == self.backups.target())
+            .map(|s| save::SaveSummary::of(&s.data));
+        if let Some(action) = self.backups.show(
+            ctx,
+            Names {
+                locale: self.locale.as_ref(),
+                interface_language: language,
+            },
+            current,
+        ) {
+            self.backup_action(action);
         }
-
-        if self.about_open {
-            egui::Window::new(language.text("About").to_string())
-                .open(&mut self.about_open)
-                .collapsible(false)
-                .resizable(false)
-                .show(ctx, |ui| {
-                    ui.heading(language.text("Casualties Unknown Save Editor").to_string());
-                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                    ui.add_space(6.0);
-                    ui.label(language.text("Edits save.sv (gzip-compressed JSON). Unknown fields are preserved as-is.").to_string());
-                    ui.label(language.text("Item, limb and setting names are read from the game's own language files.").to_string());
-                    ui.label(language.text("Built with egui.").to_string());
-                });
+        ui::about::show(
+            ctx,
+            &mut self.about_open,
+            Names {
+                locale: self.locale.as_ref(),
+                interface_language: language,
+            },
+            self.game_info.as_ref(),
+            &self.progress,
+            self.achievements.as_ref().and_then(|a| a.as_ref().ok()),
+        );
+        let achievement_language = self.achievement_language();
+        ui::achievements::show(
+            ctx,
+            &mut self.achievements_ui,
+            Names {
+                locale: self.locale.as_ref(),
+                interface_language: language,
+            },
+            achievement_language,
+            self.achievements.as_ref(),
+        );
+        if self.report.open {
+            let problems = self.problems();
+            if let Some(action) = ui::report::show(
+                ctx,
+                &mut self.report,
+                Names {
+                    locale: self.locale.as_ref(),
+                    interface_language: language,
+                },
+                &problems,
+                self.crash.is_some(),
+            ) {
+                self.report_action(action);
+            }
         }
 
         if let Some(mut wizard) = self.new_save_wizard.take() {
@@ -597,16 +699,26 @@ impl EditorApp {
                 locale: self.locale.as_ref(),
                 interface_language: language,
             };
-            egui::Window::new(format!("🆕 {}", language.text("Create new save")))
-                .open(&mut open)
-                .default_size([760.0, 680.0])
-                .min_width(540.0)
-                .show(ctx, |ui| {
+            let unlocks = &mut self.progress;
+            ui::bounded_window(
+                ctx,
+                format!("🆕 {}", language.text("Create new save")),
+                egui::vec2(760.0, 680.0),
+                540.0,
+            )
+            .open(&mut open)
+            .show(ctx, |ui| {
                     ui.heading(match wizard.step {
                         NewSaveStep::World => language.text("World settings"),
                         NewSaveStep::Character => language.text("Character"),
                     });
-                    match wizard.step {
+                    let footer_height =
+                        ui.spacing().interact_size.y + ui.spacing().item_spacing.y * 3.0 + 6.0;
+                    egui::ScrollArea::vertical()
+                        .id_salt(("new_save_scroll", wizard.step))
+                        .auto_shrink(false)
+                        .max_height((ui.available_height() - footer_height).max(80.0))
+                        .show(ui, |ui| match wizard.step {
                         NewSaveStep::World => {
                             ui.label(
                                 language
@@ -655,15 +767,33 @@ impl EditorApp {
                                     .show_ui(ui, |ui| {
                                         for (index, _) in schema::LAYERS.iter().enumerate() {
                                             let index = index as i64;
-                                            ui.selectable_value(
-                                                &mut selected,
-                                                index,
-                                                names.layer(index),
-                                            );
+                                            let reached = unlocks.is_layer_reached(index);
+                                            let label = names.layer_if_reached(index, unlocks);
+                                            if ui
+                                                .add_enabled(
+                                                    reached,
+                                                    egui::Button::selectable(selected == index, label),
+                                                )
+                                                .on_disabled_hover_text(
+                                                    language
+                                                        .text("Not reached in the game yet: descend to this layer in a run first.")
+                                                        .to_string(),
+                                                )
+                                                .clicked()
+                                            {
+                                                selected = index;
+                                            }
                                         }
                                     });
                                 if selected != current {
                                     wizard.data["biome"] = Value::from(selected);
+                                }
+                                if let Some(deepest) = unlocks.deepest_layer() {
+                                    ui.weak(
+                                        language
+                                            .text("Deepest layer reached: {layer}")
+                                            .replace("{layer}", &names.layer(deepest)),
+                                    );
                                 }
                             });
                             ui.separator();
@@ -687,12 +817,12 @@ impl EditorApp {
                                     .to_string(),
                             );
                             ui.push_id("new_save_character", |ui| {
-                                ui::character::show(ui, &mut wizard.data, names);
+                                ui::character::contents(ui, &mut wizard.data, names, unlocks, true);
                             });
                             back = true;
                             can_create = true;
                         }
-                    }
+                    });
                     ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button(language.text("Cancel")).clicked() {
@@ -746,7 +876,7 @@ impl EditorApp {
                 }
             }
             Tab::Character => {
-                ui::character::show(ui, data, names);
+                ui::character::show(ui, data, names, &mut self.progress);
             }
             Tab::Health => {
                 ui::health::show(ui, data, names);

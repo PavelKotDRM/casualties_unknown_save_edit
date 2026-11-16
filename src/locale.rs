@@ -1,14 +1,14 @@
 //! Optional display names taken from the game's own language files.
 //!
 //! The game ships its translations as JSON files in
-//! `<game>\CasualtiesUnknown_Data\Lang\*.json`. When the installation can be
+//! `<game>/CasualtiesUnknown_Data/Lang/*.json`. When the installation can be
 //! found, the editor shows proper item, limb and run-setting names (in any
 //! language the game supports). Without it the editor falls back to the raw
 //! identifiers and built-in English labels.
 //!
 //! The installation is located by, in order:
 //! 1. the `Mono path` line of the game's `Player.log` next to the save,
-//! 2. Steam library folders listed in `libraryfolders.vdf`.
+//! 2. Steam library folders ([`platform::steam_game_dirs`]).
 
 use std::collections::HashMap;
 use std::fs;
@@ -16,8 +16,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use crate::platform;
+
 /// Name of the game's data folder inside the installation directory.
-const DATA_DIR: &str = "CasualtiesUnknown_Data";
+/// Data folder of the installation, next to the executable.
+pub const DATA_DIR: &str = "CasualtiesUnknown_Data";
 
 /// Loaded translation tables.
 #[derive(Debug, Default, Clone)]
@@ -29,6 +32,9 @@ pub struct Locale {
     /// Miscellaneous strings (`other` section): limb names, layer titles,
     /// run setting names (`runset<name>`), ...
     other: HashMap<String, String>,
+    /// Status-effect names and descriptions (`moodles` section; `<id>` and
+    /// `<id>dsc`) in file order.
+    moodles: Vec<(String, String)>,
 }
 
 impl Locale {
@@ -36,7 +42,7 @@ impl Locale {
     pub fn from_json(text: &str) -> Option<Self> {
         let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let v: Value = serde_json::from_str(text).ok()?;
-        let table = |key: &str| -> HashMap<String, String> {
+        let table = |key: &str| -> Vec<(String, String)> {
             v.get(key)
                 .and_then(Value::as_object)
                 .map(|m| {
@@ -52,8 +58,9 @@ impl Locale {
                 .and_then(Value::as_str)
                 .unwrap_or("?")
                 .to_owned(),
-            main: table("main"),
-            other: table("other"),
+            main: table("main").into_iter().collect(),
+            other: table("other").into_iter().collect(),
+            moodles: table("moodles"),
         })
     }
 
@@ -75,6 +82,23 @@ impl Locale {
     /// Entry of the `other` table.
     pub fn other(&self, key: &str) -> Option<&str> {
         non_empty(self.other.get(key))
+    }
+
+    /// Status effects as `(id, name, description)` in the game's order.
+    pub fn moodles(&self) -> Vec<(&str, &str, Option<&str>)> {
+        let description = |id: &str| {
+            let key = format!("{id}dsc");
+            self.moodles
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, text)| text.as_str())
+                .filter(|text| !text.trim().is_empty())
+        };
+        self.moodles
+            .iter()
+            .filter(|(id, name)| !id.ends_with("dsc") && !name.trim().is_empty())
+            .map(|(id, name)| (id.as_str(), name.as_str(), description(id)))
+            .collect()
     }
 }
 
@@ -122,13 +146,8 @@ pub fn detect_game_dir(save_dir: Option<&Path>) -> Option<PathBuf> {
     if let Some(dir) = save_dir.and_then(game_dir_from_player_log) {
         return Some(dir);
     }
-    steam_library_roots()
+    platform::steam_game_dirs()
         .into_iter()
-        .map(|root| {
-            root.join("steamapps")
-                .join("common")
-                .join("Casualties Unknown")
-        })
         .find(|p| is_game_dir(p))
 }
 
@@ -142,55 +161,16 @@ fn game_dir_from_player_log(save_dir: &Path) -> Option<PathBuf> {
         let log = String::from_utf8_lossy(&log);
         log.lines().find_map(|line| {
             let rest = line.split_once("Mono path[0] = '")?.1;
-            let managed = rest.split('\'').next()?;
-            let dir = Path::new(managed).parent()?.parent()?.to_path_buf();
+            let managed = platform::host_path(rest.split('\'').next()?);
+            let dir = managed.parent()?.parent()?.to_path_buf();
             is_game_dir(&dir).then_some(dir)
         })
     })
 }
 
-/// Steam library roots from the default Steam install's `libraryfolders.vdf`.
-fn steam_library_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    for steam in ["ProgramFiles(x86)", "ProgramFiles"]
-        .into_iter()
-        .filter_map(std::env::var_os)
-        .map(|dir| PathBuf::from(dir).join("Steam"))
-    {
-        let vdf = steam.join("steamapps").join("libraryfolders.vdf");
-        if let Ok(text) = fs::read_to_string(&vdf) {
-            roots.extend(parse_vdf_paths(&text));
-        }
-        roots.push(steam);
-    }
-    roots
-}
-
-/// Extracts `"path"` values from a `libraryfolders.vdf` file.
-fn parse_vdf_paths(text: &str) -> Vec<PathBuf> {
-    text.lines()
-        .filter_map(|line| {
-            let mut parts = line.split('"').filter(|p| !p.trim().is_empty());
-            if parts.next()? != "path" {
-                return None;
-            }
-            Some(PathBuf::from(parts.next()?.replace("\\\\", "\\")))
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_library_paths() {
-        let vdf = "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"SteamLibrary\\\\Games\"\n\t\t\"label\"\t\t\"\"\n\t}\n}";
-        assert_eq!(
-            parse_vdf_paths(vdf),
-            vec![PathBuf::from(r"SteamLibrary\Games")]
-        );
-    }
 
     #[test]
     fn reads_language_tables() {
@@ -201,5 +181,21 @@ mod tests {
         assert_eq!(l.item_name("bandage"), Some("Dressing"));
         assert_eq!(l.item_description("bandage"), None);
         assert_eq!(l.other("Head"), Some("Head"));
+    }
+
+    #[test]
+    fn moodles_pair_names_with_descriptions_in_file_order() {
+        let l = Locale::from_json(
+            r#"{"moodles":{"pain2":"Pain","pain2dsc":"It hurts.","pain1":"Ache","stroke":"Stroke","strokedsc":""}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            l.moodles(),
+            vec![
+                ("pain2", "Pain", Some("It hurts.")),
+                ("pain1", "Ache", None),
+                ("stroke", "Stroke", None),
+            ]
+        );
     }
 }

@@ -74,17 +74,12 @@ fn summary(ui: &mut Ui, data: &Value, names: Names) {
     section_heading(ui, names, "🐾", "Run");
     card(ui, |ui| {
         ui.set_width(ui.available_width());
-        let character = get_i64(root, "character")
-            .and_then(|c| usize::try_from(c).ok())
-            .and_then(|c| schema::CHARACTERS.get(c))
-            .copied()
-            .unwrap_or("Unknown");
+        let character = get_i64(root, "character").map_or_else(
+            || names.text("Unknown").into_owned(),
+            |c| names.character(c),
+        );
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new(names.text(character).to_string())
-                    .heading()
-                    .strong(),
-            );
+            ui.label(RichText::new(character).heading().strong());
             if let Some(id) = get_i64(root, "cId") {
                 ui.label(RichText::new(format!("#{id}")).heading().weak());
             }

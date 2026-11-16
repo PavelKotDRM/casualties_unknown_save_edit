@@ -7,6 +7,12 @@ use dotscope::assembly::Operand;
 use dotscope::{CilObject, ValidationConfig};
 use unity_rs_core::studio::Studio;
 
+pub mod effects;
+
+pub use effects::{
+    Change, ContentsUse, Effect, GameEffects, ItemProfile, ItemUse, LiquidProfile, Target,
+};
+
 /// Verified item fields read from `Assembly-CSharp.dll` and Unity assets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ItemStats {
@@ -72,13 +78,27 @@ enum StaticValue {
     Number(f32),
 }
 
+/// Everything read from the installed game's code and assets.
+#[derive(Debug, Clone, Default)]
+pub struct GameData {
+    pub items: HashMap<String, ItemStats>,
+    pub effects: GameEffects,
+}
+
 /// Reads item definitions from the installed game directory.
 pub fn load_item_stats(game_dir: &Path) -> Result<HashMap<String, ItemStats>, String> {
+    load_game_data(game_dir).map(|data| data.items)
+}
+
+/// Reads item definitions and item and liquid effects, parsing the game's
+/// assembly once.
+pub fn load_game_data(game_dir: &Path) -> Result<GameData, String> {
     let data_dir = game_dir.join("CasualtiesUnknown_Data");
     let assembly_path = data_dir.join("Managed").join("Assembly-CSharp.dll");
     let assembly =
         CilObject::from_path_with_validation(&assembly_path, ValidationConfig::minimal())
             .map_err(|error| format!("Cannot parse {}: {error}", assembly_path.display()))?;
+    let effects = effects::parse(&assembly);
     let mut stats = parse_item_definitions(&assembly)?;
     let containers = parse_container_metadata(&data_dir)?;
     for (id, container) in containers {
@@ -89,7 +109,10 @@ pub fn load_item_stats(game_dir: &Path) -> Result<HashMap<String, ItemStats>, St
             item.container_tag_restriction = Some(container.tag_restriction);
         }
     }
-    Ok(stats)
+    Ok(GameData {
+        items: stats,
+        effects,
+    })
 }
 
 fn parse_item_definitions(assembly: &CilObject) -> Result<HashMap<String, ItemStats>, String> {

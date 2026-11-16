@@ -5,6 +5,7 @@ use serde_json::{Map, Value};
 
 use super::{LABEL_WIDTH, Names, card, colors, number_editor, section_heading};
 use crate::json::{get_f64, get_i64, set_i64};
+use crate::player_prefs::GameProgress;
 use crate::{model, schema};
 
 /// Top-level identity keys shown on this tab.
@@ -23,103 +24,301 @@ fn label(ui: &mut Ui, names: Names, text: &str, help: &str) {
     .on_hover_text(names.text(help).to_string());
 }
 
-/// Character selector for the `character` field.
-pub fn character_combo(ui: &mut Ui, root: &mut Map<String, Value>) -> bool {
+/// Character selector for the `character` field. Characters that are still
+/// locked in the game cannot be chosen. Returns the newly selected character.
+pub fn character_combo(
+    ui: &mut Ui,
+    root: &mut Map<String, Value>,
+    names: Names,
+    unlocks: &GameProgress,
+) -> Option<usize> {
     let Some(current) = get_i64(root, "character") else {
         ui.weak("—");
-        return false;
+        return None;
     };
     let mut value = current;
-    let name = |i: i64| {
-        usize::try_from(i)
-            .ok()
-            .and_then(|i| schema::CHARACTERS.get(i))
-            .map_or_else(|| format!("Character #{i}"), |s| (*s).to_owned())
-    };
     egui::ComboBox::from_id_salt("character")
-        .selected_text(name(value))
+        .selected_text(names.character(value))
+        .width(260.0)
         .show_ui(ui, |ui| {
-            for i in 0..schema::CHARACTERS.len() as i64 {
-                ui.selectable_value(&mut value, i, name(i));
+            for i in 0..schema::CHARACTERS.len() {
+                let unlocked = unlocks.is_unlocked(i);
+                let label = names.character_if_unlocked(i, unlocks);
+                let response =
+                    ui.add_enabled(unlocked, egui::Button::selectable(value == i as i64, label));
+                if response.clicked() {
+                    value = i as i64;
+                }
+                response.on_disabled_hover_text(names.character_unlock_requirement());
             }
         });
     if value != current {
         set_i64(root, "character", value);
-        true
+        usize::try_from(value).ok()
     } else {
-        false
+        None
     }
 }
 
+/// Starting skills, dossier and quirks of a character.
+fn character_info(ui: &mut Ui, names: Names, character: usize) {
+    let Some(def) = schema::CHARACTERS.get(character) else {
+        return;
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.add_space(LABEL_WIDTH + ui.spacing().item_spacing.x);
+        ui.weak(names.text("Starting skills:").to_string());
+        for (skill, (level, mult)) in schema::SKILLS
+            .iter()
+            .zip(def.base_skills.iter().zip(def.gain_multipliers))
+        {
+            let mut text = format!("{} {level}", skill.key);
+            if mult != 1.0 {
+                text.push_str(&format!(" (×{} XP)", super::fmt_num(mult)));
+            }
+            ui.label(RichText::new(text).monospace())
+                .on_hover_text(names.skill(skill));
+        }
+    });
+    let description = names.character_description(character);
+    let quirks = names.character_quirks(character);
+    if description.is_some() || quirks.is_some() {
+        egui::CollapsingHeader::new(names.text("Dossier and quirks").to_string())
+            .id_salt(("character_dossier", character))
+            .show(ui, |ui| {
+                if let Some(text) = description {
+                    ui.label(text);
+                }
+                if let Some(text) = quirks {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(text).color(colors::ACCENT));
+                }
+            });
+    }
+}
+
+/// Editor of the game's character unlocks (stored outside the save).
+pub fn unlocks_card(ui: &mut Ui, names: Names, unlocks: &mut GameProgress) {
+    card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.strong(names.text("Unlocked characters").to_string());
+            if ui
+                .small_button(format!("⟳ {}", names.text("Refresh")))
+                .on_hover_text(
+                    names
+                        .text("Read the unlocks from the game again")
+                        .to_string(),
+                )
+                .clicked()
+            {
+                *unlocks = GameProgress::load();
+            }
+        });
+        ui.weak(
+            names
+                .text("Stored in the game's settings, not in the save. Character N unlocks after a run is won as character N − 1. Close the game before changing them.")
+                .to_string(),
+        );
+        if let Some(error) = &unlocks.error {
+            ui.colored_label(
+                colors::WARN,
+                format!("{} {error}", names.text("Could not read the unlocks:")),
+            );
+            return;
+        }
+        for i in 0..schema::CHARACTERS.len() {
+            let mut unlocked = unlocks.is_unlocked(i);
+            let response = ui.add_enabled(
+                i != 0,
+                egui::Checkbox::new(&mut unlocked, names.character_if_unlocked(i, unlocks)),
+            );
+            if i == 0 {
+                response.on_disabled_hover_text(names.text("Always unlocked").to_string());
+            } else if response.changed() {
+                unlocks.write_error = unlocks.set_unlocked(i, unlocked).err();
+            }
+        }
+        if let Some(error) = &unlocks.write_error {
+            ui.colored_label(
+                colors::BAD,
+                format!("{} {error}", names.text("Could not change the unlock:")),
+            );
+        }
+    });
+}
+
+/// Endings the player has reached, read from (and editable in) the game's
+/// preferences. Names and how to reach an ending stay hidden until then.
+pub fn endings_card(ui: &mut Ui, names: Names, progress: &mut GameProgress) {
+    card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.strong(names.text("Endings").to_string());
+            if let Some(found) = progress.discovered_endings() {
+                ui.weak(
+                    names
+                        .text("{found} of {total} discovered")
+                        .replace("{found}", &found.to_string())
+                        .replace("{total}", &schema::ENDINGS.len().to_string()),
+                );
+            }
+        });
+        if let Some(error) = &progress.error {
+            ui.colored_label(
+                colors::WARN,
+                format!("{} {error}", names.text("Could not read the unlocks:")),
+            );
+            return;
+        }
+        for i in 0..schema::ENDINGS.len() {
+            let mut discovered = progress.is_ending_discovered(i);
+            let response = ui.checkbox(&mut discovered, names.ending_if_discovered(i, progress));
+            let response = if discovered {
+                response.on_hover_text(names.text(schema::ENDINGS[i].how).to_string())
+            } else {
+                response.on_hover_text(names.text("Not discovered yet.").to_string())
+            };
+            if response.changed() {
+                progress.write_error = progress.set_ending_discovered(i, discovered).err();
+            }
+        }
+        ui.weak(
+            names
+                .text("The game marks an ending again on start if you have its Steam achievement.")
+                .to_string(),
+        );
+    });
+}
+
 /// Shows the character tab. Returns `true` if the document changed.
-pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
+pub fn show(ui: &mut Ui, data: &mut Value, names: Names, unlocks: &mut GameProgress) -> bool {
+    egui::ScrollArea::vertical()
+        .auto_shrink(false)
+        .show(ui, |ui| contents(ui, data, names, unlocks, false))
+        .inner
+}
+
+/// Character tab contents without a scroll area. With `new_save`, choosing a
+/// character also gives it the game's starting skills, as a new run would.
+/// Returns `true` if the document changed.
+pub fn contents(
+    ui: &mut Ui,
+    data: &mut Value,
+    names: Names,
+    unlocks: &mut GameProgress,
+    new_save: bool,
+) -> bool {
     let mut changed = false;
     let Some(root) = data.as_object_mut() else {
         return false;
     };
-    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        section_heading(ui, names, "🐾", "Identity");
-        card(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                label(
-                    ui,
-                    names,
-                    "Character",
-                    "Playable character (`character`).",
-                );
-                changed |= character_combo(ui, root);
-            });
-            for &(key, text, help) in IDENTITY {
-                if let Some(v) = root.get_mut(key) {
-                    ui.horizontal(|ui| {
-                        label(ui, names, text, help);
-                        changed |= number_editor(ui, v, 0.2);
-                    });
-                }
+    section_heading(ui, names, "🐾", "Identity");
+    let mut selected = None;
+    card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            label(
+                ui,
+                names,
+                "Character",
+                "Playable character (`character`).",
+            );
+            selected = character_combo(ui, root, names, unlocks);
+            let current = get_i64(root, "character").and_then(|c| usize::try_from(c).ok());
+            if let Some(c) = current
+                && !unlocks.is_unlocked(c)
+            {
+                ui.colored_label(colors::WARN, format!("🔒 {}", names.text("Locked in the game")))
+                    .on_hover_text(names.character_unlock_requirement());
+            }
+            if !new_save
+                && let Some(c) = current
+                && c < schema::CHARACTERS.len()
+                && ui
+                    .button(names.text("Reset skills to starting values").to_string())
+                    .on_hover_text(
+                        names
+                            .text("Set the levels and XP gain multipliers this character starts a run with.")
+                            .to_string(),
+                    )
+                    .clicked()
+                && let Some(skills) = root
+                    .get_mut("body")
+                    .and_then(|b| b.get_mut("skills"))
+                    .and_then(Value::as_object_mut)
+            {
+                model::setup_character_skills(skills, c);
+                changed = true;
             }
         });
-
-        section_heading(ui, names, "💪", "Skills");
-        let Some(skills) = root
-            .get_mut("body")
-            .and_then(|b| b.get_mut("skills"))
-            .and_then(Value::as_object_mut)
-        else {
-            ui.colored_label(
-                colors::WARN,
-                names.text("No `body.skills` in this save.").to_string(),
-            );
-            return;
-        };
-        card(ui, |ui| {
-            ui.set_width(ui.available_width());
-            for def in &schema::SKILLS {
-                changed |= skill_row(ui, skills, def, names);
-                ui.add_space(6.0);
+        if let Some(c) = get_i64(root, "character").and_then(|c| usize::try_from(c).ok()) {
+            character_info(ui, names, c);
+        }
+        for &(key, text, help) in IDENTITY {
+            if let Some(v) = root.get_mut(key) {
+                ui.horizontal(|ui| {
+                    label(ui, names, text, help);
+                    changed |= number_editor(ui, v, 0.2);
+                });
             }
-            ui.weak(
-                names
-                    .text("Changing a level recalculates the experience bounds exactly like the game does, keeping the progress towards the next level.")
-                    .to_string(),
-            );
-        });
-        let known = |k: &str| {
-            schema::SKILLS.iter().any(|s| {
-                [
-                    s.key.to_owned(),
-                    format!("exp{}", s.key),
-                    format!("min{}", s.key),
-                    format!("max{}", s.key),
-                    format!("{}GainMult", s.key),
-                    format!("{}From10", s.key),
-                ]
-                .iter()
-                .any(|x| x == k)
-            })
-        };
-        changed |= super::other_fields(ui, "skills_other", skills, &known);
+        }
     });
+    if let Some(character) = selected {
+        changed = true;
+        if new_save
+            && let Some(skills) = root
+                .get_mut("body")
+                .and_then(|b| b.get_mut("skills"))
+                .and_then(Value::as_object_mut)
+        {
+            model::setup_character_skills(skills, character);
+        }
+    }
+    unlocks_card(ui, names, unlocks);
+    if !new_save {
+        endings_card(ui, names, unlocks);
+    }
+
+    section_heading(ui, names, "💪", "Skills");
+    let Some(skills) = root
+        .get_mut("body")
+        .and_then(|b| b.get_mut("skills"))
+        .and_then(Value::as_object_mut)
+    else {
+        ui.colored_label(
+            colors::WARN,
+            names.text("No `body.skills` in this save.").to_string(),
+        );
+        return changed;
+    };
+    card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        for def in &schema::SKILLS {
+            changed |= skill_row(ui, skills, def, names);
+            ui.add_space(6.0);
+        }
+        ui.weak(
+            names
+                .text("Changing a level recalculates the experience bounds exactly like the game does, keeping the progress towards the next level.")
+                .to_string(),
+        );
+    });
+    let known = |k: &str| {
+        schema::SKILLS.iter().any(|s| {
+            [
+                s.key.to_owned(),
+                format!("exp{}", s.key),
+                format!("min{}", s.key),
+                format!("max{}", s.key),
+                format!("{}GainMult", s.key),
+                format!("{}From10", s.key),
+            ]
+            .iter()
+            .any(|x| x == k)
+        })
+    };
+    changed |= super::other_fields(ui, "skills_other", skills, &known);
     changed
 }
 

@@ -126,13 +126,16 @@ pub struct FieldGroup {
 
 mod body;
 mod character;
+mod endings;
 mod limbs;
 mod run;
 
 pub use body::{BODY_GROUPS, body_field};
 pub use character::{
-    CHARACTERS, HOLD_SLOTS, HoldSlotDef, LAYERS, SKILLS, SkillDef, experience_for_level,
+    CHARACTERS, CharacterDef, HOLD_SLOTS, HoldSlotDef, LAYERS, SKILLS, SkillDef,
+    experience_for_level,
 };
+pub use endings::{ENDINGS, EndingDef};
 pub use limbs::{LIMB_FIELDS, LIMBS, LimbDef, limb_field};
 pub use run::{
     PresetValue, RUN_PRESETS, RUN_SETTINGS, RunPreset, RunSettingDef, RunSettingKind, run_setting,

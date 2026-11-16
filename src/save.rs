@@ -2,8 +2,9 @@
 //!
 //! # File format
 //!
-//! Casualties Unknown stores the current run in
-//! `%USERPROFILE%\AppData\LocalLow\Orsoniks\CasualtiesUnknown\save.sv`.
+//! Casualties Unknown stores the current run in `save.sv` inside its save
+//! folder ([`platform::save_dir`]; on Windows
+//! `%USERPROFILE%\AppData\LocalLow\Orsoniks\CasualtiesUnknown`).
 //! The file is a gzip stream containing a single line of ASCII JSON produced
 //! by Newtonsoft.Json (`SaveSystem.SaveGame` in the game code).
 //!
@@ -19,6 +20,7 @@ use std::fmt;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use flate2::Compression;
 use flate2::read::GzDecoder;
@@ -26,6 +28,8 @@ use flate2::write::GzEncoder;
 use serde_json::{Map, Value, json};
 
 use crate::json;
+use crate::model;
+use crate::platform;
 use crate::schema::{self, Good, Kind};
 
 /// File name of the save written by the game.
@@ -69,15 +73,10 @@ pub enum SaveFormat {
     PlainJson,
 }
 
-/// Returns the default save directory:
-/// `%USERPROFILE%\AppData\LocalLow\Orsoniks\CasualtiesUnknown`.
+/// Returns the default save directory ([`platform::save_dir`]), e.g.
+/// `%USERPROFILE%\AppData\LocalLow\Orsoniks\CasualtiesUnknown` on Windows.
 pub fn default_save_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| {
-        home.join("AppData")
-            .join("LocalLow")
-            .join("Orsoniks")
-            .join("CasualtiesUnknown")
-    })
+    platform::save_dir()
 }
 
 /// Returns the default save file path (see [`default_save_dir`]).
@@ -127,16 +126,14 @@ pub fn new_game_data() -> Value {
 
     let mut skills = Map::new();
     for skill in schema::SKILLS {
-        skills.insert(skill.key.to_owned(), Value::from(10));
+        skills.insert(skill.key.to_owned(), Value::from(0));
         skills.insert(format!("exp{}", skill.key), Value::from(0.0));
         skills.insert(format!("min{}", skill.key), Value::from(0));
         skills.insert(format!("max{}", skill.key), Value::from(0));
         skills.insert(format!("{}GainMult", skill.key), Value::from(1.0));
         skills.insert(format!("{}From10", skill.key), Value::from(0.0));
     }
-    for skill in schema::SKILLS {
-        crate::model::set_skill_level(&mut skills, skill.key, 10);
-    }
+    crate::model::setup_character_skills(&mut skills, 0);
     body.insert("skills".to_owned(), Value::Object(skills));
 
     let limbs: Vec<_> = schema::LIMBS
@@ -330,7 +327,7 @@ pub struct BackupInfo {
     /// Full path of the backup.
     pub path: PathBuf,
     /// Last modification time.
-    pub modified: Option<std::time::SystemTime>,
+    pub modified: Option<SystemTime>,
     /// File size in bytes.
     pub size: u64,
 }
@@ -354,6 +351,132 @@ pub fn list_backups(save_path: &Path) -> Vec<BackupInfo> {
         .collect();
     list.sort_by_key(|a| std::cmp::Reverse(a.modified));
     list
+}
+
+/// Whether `path` is a file inside a backup folder.
+pub fn is_backup(path: &Path) -> bool {
+    path.parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name == BACKUP_DIR_NAME)
+}
+
+/// The save a backup was made from: `…/SaveEditorBackups/save_<stamp>.sv`
+/// belongs to `…/save.sv`. Returns `None` for files that are not backups.
+pub fn backup_source(backup: &Path) -> Option<PathBuf> {
+    if !is_backup(backup) {
+        return None;
+    }
+    let folder = backup.parent()?.parent()?;
+    let stem = backup.file_stem()?.to_string_lossy();
+    // Strip `_YYYY-MM-DD_HH-MM-SS` and an optional `_<n>` counter.
+    let parts: Vec<&str> = stem.split('_').collect();
+    let date_at = parts
+        .iter()
+        .rposition(|part| part.len() == 10 && part.chars().filter(|c| *c == '-').count() == 2)?;
+    let original = parts[..date_at].join("_");
+    if original.is_empty() {
+        return None;
+    }
+    let name = match backup.extension() {
+        Some(ext) => format!("{original}.{}", ext.to_string_lossy()),
+        None => original,
+    };
+    Some(folder.join(name))
+}
+
+/// Deletes a backup. Refuses to touch files outside a backup folder.
+pub fn delete_backup(backup: &Path) -> Result<(), SaveError> {
+    if !is_backup(backup) {
+        return Err(SaveError::Io(
+            backup.to_owned(),
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a backup"),
+        ));
+    }
+    fs::remove_file(backup).map_err(|e| SaveError::Io(backup.to_owned(), e))
+}
+
+/// Rule for picking old backups to clean up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cleanup {
+    /// Everything except the newest `n` backups.
+    KeepNewest(usize),
+    /// Backups older than this many days.
+    OlderThanDays(u32),
+}
+
+/// Backups from `list` (newest first, as from [`list_backups`]) matched by
+/// `rule` at time `now`. Backups with an unknown date are never matched by
+/// the age rule.
+pub fn old_backups(list: &[BackupInfo], rule: Cleanup, now: SystemTime) -> Vec<PathBuf> {
+    match rule {
+        Cleanup::KeepNewest(n) => list.iter().skip(n).map(|b| b.path.clone()).collect(),
+        Cleanup::OlderThanDays(days) => {
+            let age = std::time::Duration::from_secs(u64::from(days) * 24 * 60 * 60);
+            list.iter()
+                .filter(|b| {
+                    b.modified
+                        .and_then(|m| now.duration_since(m).ok())
+                        .is_some_and(|d| d > age)
+                })
+                .map(|b| b.path.clone())
+                .collect()
+        }
+    }
+}
+
+/// Short description of a save, used to compare backups.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SaveSummary {
+    /// Character index (`character`).
+    pub character: Option<i64>,
+    /// Layer index (`biome`).
+    pub biome: Option<i64>,
+    /// Run time in seconds.
+    pub run_time: Option<f64>,
+    /// Distance traveled in metres.
+    pub traveled: Option<i64>,
+    /// Number of items.
+    pub items: usize,
+    /// Skill levels in [`schema::SKILLS`] order.
+    pub skills: Vec<i64>,
+    /// Blood volume (percent).
+    pub blood: Option<f64>,
+    /// Whether the game marked the save as cheated.
+    pub cheated: bool,
+}
+
+impl SaveSummary {
+    /// Summarises a save document.
+    pub fn of(data: &Value) -> Self {
+        let skills = data
+            .pointer("/body/skills")
+            .and_then(Value::as_object)
+            .map(|skills| {
+                schema::SKILLS
+                    .iter()
+                    .map(|def| model::skill_progress(skills, def.key).0)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            character: data.get("character").and_then(Value::as_i64),
+            biome: data.get("biome").and_then(Value::as_i64),
+            run_time: data.get("runTime").and_then(Value::as_f64),
+            traveled: data.get("totalTraveled").and_then(Value::as_i64),
+            items: data
+                .get("items")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len),
+            skills,
+            blood: data.pointer("/body/bloodVolume").and_then(Value::as_f64),
+            cheated: data.get("cheatedSave").and_then(Value::as_bool) == Some(true),
+        }
+    }
+
+    /// Reads and summarises a save file.
+    pub fn load(path: &Path) -> Result<Self, SaveError> {
+        SaveFile::load(path).map(|file| Self::of(&file.data))
+    }
 }
 
 #[cfg(test)]
@@ -382,8 +505,9 @@ mod tests {
             data["runSettings"].as_array().unwrap().len(),
             schema::RUN_SETTINGS.len()
         );
-        assert_eq!(data["body"]["skills"]["STR"], 10);
-        assert_eq!(data["body"]["skills"]["minSTR"], 640);
+        assert_eq!(data["body"]["skills"]["STR"], 9);
+        assert_eq!(data["body"]["skills"]["minSTR"], 540);
+        assert_eq!(data["body"]["skills"]["expSTR"], 540.0);
         assert_eq!(data["body"]["bloodVolume"], 100.0);
         assert_eq!(data["body"]["desensitizedMult"], 1.0);
         assert_eq!(data["limbs"][0]["prostheticInfo"], json!({}));
@@ -447,5 +571,70 @@ mod tests {
         assert!(extra.exists());
         assert_eq!(SaveFile::load(&path).unwrap().data["runTime"], json!(1.0));
         assert_eq!(list_backups(&path).len(), 2);
+    }
+
+    #[test]
+    fn backups_know_their_save_and_only_backups_can_be_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("my_run.sv");
+        fs::write(&path, encode(&sample(), SaveFormat::Gzip)).unwrap();
+        let first = create_backup(&path).unwrap();
+        let second = create_backup(&path).unwrap();
+        assert!(
+            second
+                .file_stem()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with("_1")
+        );
+        assert_eq!(backup_source(&first), Some(path.clone()));
+        assert_eq!(backup_source(&second), Some(path.clone()));
+        assert_eq!(backup_source(&path), None);
+
+        assert!(delete_backup(&path).is_err());
+        assert!(path.exists());
+        delete_backup(&first).unwrap();
+        assert_eq!(list_backups(&path).len(), 1);
+    }
+
+    #[test]
+    fn summary_reads_the_run_overview() {
+        let summary = SaveSummary::of(&sample());
+        assert_eq!(summary.items, 1);
+        assert_eq!(summary.run_time, Some(7348.6626));
+        assert_eq!(summary.blood, Some(100.0));
+        assert_eq!(summary.skills.first(), Some(&13));
+        assert_eq!(summary.biome, None);
+    }
+
+    #[test]
+    fn cleanup_rules_pick_the_old_backups() {
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100 * 86_400);
+        let day = |d: u64| Some(now - std::time::Duration::from_secs(d * 86_400));
+        let list: Vec<BackupInfo> = [day(0), day(2), day(10), None]
+            .into_iter()
+            .enumerate()
+            .map(|(i, modified)| BackupInfo {
+                path: PathBuf::from(format!("b{i}")),
+                modified,
+                size: 0,
+            })
+            .collect();
+        let names = |paths: Vec<PathBuf>| -> Vec<String> {
+            paths.iter().map(|p| p.display().to_string()).collect()
+        };
+        assert_eq!(
+            names(old_backups(&list, Cleanup::KeepNewest(2), now)),
+            ["b2", "b3"]
+        );
+        assert!(old_backups(&list, Cleanup::KeepNewest(9), now).is_empty());
+        assert_eq!(
+            names(old_backups(&list, Cleanup::OlderThanDays(1), now)),
+            ["b1", "b2"]
+        );
+        assert_eq!(
+            names(old_backups(&list, Cleanup::OlderThanDays(0), now)),
+            ["b1", "b2"]
+        );
     }
 }

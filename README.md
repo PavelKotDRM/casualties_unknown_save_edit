@@ -1,114 +1,332 @@
 # Casualties Unknown Save Editor
 
-A desktop save editor for **Casualties Unknown**, written in Rust with [egui](https://github.com/emilk/egui) 0.37.
+[![CI](https://github.com/PavelKotDRM/casualties_unknown_save_edit/actions/workflows/ci.yml/badge.svg)](https://github.com/PavelKotDRM/casualties_unknown_save_edit/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The game stores its run in `save.sv`, which is gzip-compressed JSON. The editor opens it, makes a backup, and shows the data as graphical, game-like views: gauges, a clickable body figure, skill bars, inventory cards and so on. A raw JSON tree is also available. Any field the editor doesn't recognise is kept unchanged, and an unmodified file is written back byte-for-byte identical.
+A desktop save editor and wiki for **Casualties Unknown**, written in Rust with
+[egui](https://github.com/emilk/egui).
+
+The game stores its run in `save.sv`, which is gzip-compressed JSON. The editor
+opens it, makes a backup, and shows the data as game-like views: gauges, a
+clickable body figure, skill bars, inventory cards and more. A raw JSON tree is
+also available. Fields the editor does not recognise are kept unchanged, and an
+unmodified file is written back byte-for-byte identical.
+
+## Contents
+
+- [Casualties Unknown Save Editor](#casualties-unknown-save-editor)
+  - [Contents](#contents)
+  - [Features](#features)
+    - [Editor tabs](#editor-tabs)
+    - [Game progress](#game-progress)
+    - [Tools](#tools)
+    - [Game data](#game-data)
+  - [Getting started](#getting-started)
+    - [Download](#download)
+    - [Build from source](#build-from-source)
+    - [Editing a save](#editing-a-save)
+  - [Inventory and weight](#inventory-and-weight)
+  - [Platforms](#platforms)
+  - [Reporting problems](#reporting-problems)
+    - [Privacy](#privacy)
+  - [Interface language packs](#interface-language-packs)
+  - [Development](#development)
+    - [Project layout](#project-layout)
+    - [Updating for a new game version](#updating-for-a-new-game-version)
+    - [Testing](#testing)
+    - [CI/CD and releases](#cicd-and-releases)
+  - [License](#license)
 
 ## Features
 
+### Editor tabs
+
 | Tab | What you can do |
 | --- | --- |
-| **Overview** | Body figure, vitals, character and run summary, and one-click quick fixes. |
-| **Character** | Character type, height, age and id. Skills (STR / RES / INT) with level ± buttons that recalculate XP bounds exactly as the game does. |
-| **Health** | All body values grouped into cards (vitals, needs, blood, temperature, …) with coloured gauges you can drag. Restore vitals and fill needs. |
-| **Limbs** | Painted body figure coloured by condition, with markers for bleeding, infection, fracture, dislocation, tourniquet, dismemberment and prosthetics. Click a limb to edit it, or heal one or all limbs, including regrowing dismembered ones. |
-| **Inventory** | Items grouped by hold slot (right hand, left hand, mouth, upper, middle and lower back — the game's six `slot` indices) or worn location, with contents, verified weight, armor and insulation stats. Hands-only items (toolbox, water jug, pickaxes, sledgehammer and others flagged `onlyHoldInHands` by the game) can be held only in the right or left hand, though they may still be stored inside containers. Clothing likewise cannot be held in any body slot: it is either worn in its own wear slot or stored inside a container (the game's only exception is the autopump). The editor also follows the game's load rules: clothing cannot be worn on a dismembered limb, a container that still holds items cannot be stored in another container, the colour swatch is limited to the game's eight colours, and warnings flag items in non-existent slots and condition-0 items that the game destroys. Compatible wear slots are offered when moving or adding equipment, and occupied wear slots (such as a worn thigh holster or backpack) are offered as container destinations; existing incompatible assignments are retained and flagged for repair. The editor calculates carrying load and warns when the character is overburdened. |
-| **Run** | Layer, time, distance and calories. All run settings with sliders, checkboxes and dropdowns. Mood chart with draggable points. Saved recipes. |
-| **Raw JSON** | Collapsible / expandable tree with filtering, type changes, a context menu (copy path, copy JSON, delete) and a full text editor with validation. |
+| **Overview** | Body figure, vitals, character and run summary, one-click quick fixes. |
+| **Character** | Character, skills with exact XP bounds, height, age and id; unlocked characters and endings. |
+| **Health** | All body values in cards (vitals, needs, blood, temperature, …) with draggable gauges. |
+| **Limbs** | Body figure coloured by condition; heal limbs, regrow dismembered ones, edit injuries. |
+| **Inventory** | Items by hold slot or worn location, contents, weight, armor and insulation. |
+| **Run** | Layer, time, distance, calories, all run settings, mood chart and saved recipes. |
+| **Raw JSON** | Filterable tree with type changes, a context menu and a validating text editor. |
 
-Other features:
+### Game progress
 
-- **Create a new save.** Choose one of the game's built-in world presets or customize every world setting, set the starting layer, then configure the character. The wizard writes a new `.sv` save or plain `.json` file.
-- **Backups.** A timestamped copy is made in a `SaveEditorBackups` folder next to the save every time a file is opened. You can also make backups manually, and browse or restore them from *File → Backups…*.
-- **Undo / redo** (Ctrl+Z / Ctrl+Y). Unsaved changes are protected when you open another file or close the window.
-- **Import / export** a pretty-printed, human-readable JSON copy (*File → Export JSON…* / *Import JSON…*).
-- **Real item, liquid and setting names** in any game language. These are read from the game's `Lang/*.json` files when the game folder is found. Choose the language and the folder in the *Game data* menu.
-- **Game-synced item stats.** Select the installation folder from *Game data → Set game folder…* (or use automatic detection) to read item definitions from `Assembly-CSharp.dll` and container limits and encumbrance multipliers from Unity assets. Extraction reads metadata and IL without executing game code; the Unity asset layout currently supports the game's 2022 serialization format. A sync error is shown if the game data cannot be read.
-- **Extensible interface languages.** English and Russian are built in; additional JSON language packs can be loaded without rebuilding. Choose *Game data → Interface language* independently of the language used for in-game names.
+- **Character unlocks.** The game keeps them outside the save, in its own
+  settings (Unity PlayerPrefs): winning a run as character *N* sets
+  `wonchar<N>`, which unlocks character *N + 1*. Descending raises
+  `deepestlayer` to the deepest layer reached. The editor reads and changes
+  these values on the *Character* tab. Close the game first, because it caches
+  its settings while running.
+- **Endings.** The game records each ending it has seen in the same settings. 
+  The *Endings* card, the wiki and *Help→ About* show how many were found. 
+  An ending's name and how to reach it stay hidden ("🔒 Ending #N") until it 
+  is discovered.
+- **Achievements** (*Help → Achievements*). The game's 40 Steam achievements
+  with overall progress, unlock dates, search and an All / Unlocked / Locked
+  filter. They are read, read-only, from Steam's local stats cache. Hidden
+  achievements stay hidden until unlocked.
+- **No spoilers.** Characters the game still has locked, layers not reached yet
+  and undiscovered endings appear only as "🔒" placeholders, both in selection
+  lists and in the wiki.
 
-## Building
+### Tools
 
-Requires a recent stable Rust toolchain.
+- **New save wizard** (*File → New save…*). Pick a built-in world preset or
+  customise every setting, choose the starting layer (limited to layers already
+  reached in the game) and configure the character (limited to unlocked
+  characters).
+- **Game wiki** (*Help → Game wiki*, F1). A searchable reference built from the
+  editor's knowledge and the game's language files: characters, endings, skills
+  and the XP table, body and limb stats with healthy ranges, status effects,
+  world settings, presets, layers, items and liquids. Works without an open
+  save. Item and medicine entries list value, spoilage, crafting qualities,
+  contents and the effects of use (per use or per whole item, timed effects,
+  possible random or overdose effects), read from the game's code. Search
+  matches every word, ranks title matches first and highlights hits (Ctrl+F,
+  Esc to clear).
+- **Backups** (*File → Backups…*). A timestamped copy goes to a
+  `SaveEditorBackups` folder next to the save whenever a file is opened,
+  restored over or overwritten after an outside change. The browser compares any
+  backup with the current save, restores, opens or deletes it, and cleans up
+  several at once (keep the newest *N*, or older than *N* days).
+- **Automatic refresh.** Every 5 seconds the editor re-reads what the game can
+  change: unlocks, endings, achievements, backups and the game installation. An
+  unmodified save that changes on disk is reloaded; an edited one is left alone
+  with a warning. Toggle it in *Game data → Refresh data automatically*;
+  *Refresh now* (F5) always works.
+- **Undo / redo** (Ctrl+Z / Ctrl+Y), with protection for unsaved changes.
+- **Import / export** of a pretty-printed JSON copy (*File → Export JSON…* /
+  *Import JSON…*).
+- **Version information.** The status bar shows the editor and game versions.
+  *Help → About* lists the editor build, the game version it was made for, and
+  the installed game's version, Unity version, Steam build, folder and size. A ⚠
+  warning appears when the installed game is a different version.
+- **Problem reports** (*Help → Report a problem…*). See [Reporting
+  problems](#reporting-problems).
+
+### Game data
+
+- **Real names** of items, liquids and settings in any game language, read from
+  the game's `Lang/*.json` files.
+- **Game-synced item stats.** Item definitions are read from
+  `Assembly-CSharp.dll`, and container limits and encumbrance multipliers from
+  the Unity assets. The editor reads metadata and IL only and never runs game
+  code. Set the folder with *Game data → Set game folder…* or let the editor
+  find it.
+- **Interface languages.** English and Russian are built in, and JSON packs add
+  more without rebuilding (see [Interface language
+  packs](#interface-language-packs)).
+
+## Getting started
+
+### Download
+
+Ready-made builds for Windows, Linux and macOS are attached to each
+[release](https://github.com/PavelKotDRM/casualties_unknown_save_edit/releases).
+Every CI run also uploads build artifacts.
+
+### Build from source
+
+Requires a recent stable [Rust](https://rustup.rs) toolchain. On Linux, install
+the development packages first (Debian/Ubuntu names: `pkg-config
+libfontconfig1-dev libwayland-dev libxkbcommon-dev`).
 
 ```sh
 cargo build --release
 ```
 
-The executable is `target/release/cu_save_editor.exe`. API documentation is available with `cargo doc --open`.
+The executable is `target/release/cu_save_editor` (`cu_save_editor.exe` on
+Windows). API documentation is available with `cargo doc --open`.
 
-## Usage
+### Editing a save
 
-1. In the game, use **Save & Quit**. The game deletes `save.sv` as soon as a run is loaded, so only edit the save while the game is not running a loaded run.
-2. Start the editor. It opens the default save automatically:
-   `%USERPROFILE%\AppData\LocalLow\Orsoniks\CasualtiesUnknown\save.sv`.
-   You can also pass a path on the command line or use *File → Open…* (Ctrl+O).
-3. Edit, then press **Save** (Ctrl+S).
+1. In the game, use **Save & Quit**. The game deletes `save.sv` as soon as a run
+   is loaded, so edit the save only while no run is loaded.
+2. Start the editor. It opens the default save automatically (see
+   [Platforms](#platforms)). You can also pass a path on the command line or use
+   *File → Open…* (Ctrl+O).
+3. Make your changes and press **Save** (Ctrl+S).
 4. Load the run in the game.
 
-To start from scratch, use *File → New save…*. Choose a built-in world preset
-or customize the run settings, select the starting layer, and then configure
-the character. Creating the save opens the normal save-file picker; use the
-game's `save.sv` location and `.sv` extension for a game save.
+To start from scratch, use *File → New save…* and save the result as `save.sv`
+in the game's save folder.
 
-Editor settings (game folder, game-name language, and interface language) are stored in `%APPDATA%\cu_save_editor\config.json`.
+Editor settings (game folder, languages, automatic refresh) are stored in
+`cu_save_editor/config.json` in the system configuration folder: `%APPDATA%` on
+Windows, `~/.config` on Linux and `~/Library/Application Support` on macOS.
 
-Item weights and supported wearable slots come from the installed game rather than the editor's fallback catalogue. Carrying capacity is computed from the saved body state and run settings; when stats are missing, the UI marks the estimate incomplete instead of claiming the character is under capacity.
+## Inventory and weight
 
-Container destinations are restricted by the game's item tags, per-item weight
-limits, and remaining capacity. Full or incompatible containers are disabled
-when adding or moving items; container details show remaining capacity and
-whether the container can accept the selected item.
+The editor follows the game's own rules:
 
-Inventory shows two different totals. **Game load** is shown in the game's
-weight units (`u`): item weights are combined with container encumbrance
-multipliers, and liquid items scale with their fill level. Container capacity
-and maximum item weight are storage limits; they do not clamp the carried
-weight of contents already present in a save. These limits and the encumbrance
-reduction are shown in each container's details. Capacity is shown as remaining
-weight over the maximum, based on the full weight of stored items. **Physical
-weight** is a separate rough approximation: liquids are treated as 1 kg per
-litre (regardless of type), and game weight units are treated as kilograms for
-empty item weight.
-This estimate does not apply storage multipliers and is not the game's
-encumbrance value. Missing or invalid liquid component data is marked
-incomplete rather than assumed empty; the game may use default contents when
-component data is absent.
+- Items are grouped by the six hold slots (right hand, left hand, mouth, upper,
+  middle and lower back) or by worn location.
+- Hands-only items (toolbox, water jug, pickaxes, sledgehammer and others
+  flagged `onlyHoldInHands`) go only in the hands; clothing is worn in its own
+  wear slot. Both may still be stored inside containers.
+- Clothing cannot be worn on a dismembered limb, and a container that still
+  holds items cannot go into another container.
+- Containers accept items by the game's tags, per-item weight limits and
+  remaining capacity; full or incompatible containers are disabled.
+- Warnings flag items in non-existent slots and condition-0 items that the game
+  destroys. Existing invalid assignments are kept and flagged for repair.
+
+The inventory shows two totals:
+
+- **Game load**, in the game's weight units (`u`). Item weights are combined
+  with container encumbrance multipliers, and liquids scale with their fill
+  level. This is what the game uses for overburdening.
+- **Physical weight**, a rough estimate: liquids count as 1 kg per litre and
+  game units as kilograms. It ignores storage multipliers.
+
+Missing item stats or liquid data mark a total as incomplete rather than
+guessing.
+
+## Platforms
+
+The editor is developed and tested on Windows. The code is portable, and
+everything specific to an operating system is kept in `src/platform.rs`.
+
+| | Windows | Linux / Steam Deck (Proton) |
+| --- | --- | --- |
+| Save | `%USERPROFILE%\AppData\LocalLow\Orsoniks\CasualtiesUnknown\save.sv` | the same path inside the Proton prefix, `steamapps/compatdata/4576490/pfx/drive_c/users/steamuser/…` |
+| Game folder | from `Player.log` or the Steam libraries | from the Steam libraries (native, `~/.local/share/Steam`, Flatpak) |
+| Unlocks and endings | read and changed | read and changed in the prefix (close the game first) |
+
+On macOS, and for native Unity builds, the editor looks for the save in Unity's
+standard data folder. Reading the game's settings is not supported there yet, so
+all characters, layers and endings are shown as available.
+
+To add a platform, extend the functions in `src/platform.rs` and, for progress
+tracking, add a `PrefsStore` implementation in `src/player_prefs.rs`.
+
+## Reporting problems
+
+Use *Help → Report a problem…*, or the 🐞 button next to an error in the status
+bar. The window lists problems the editor has detected (for example, a missing
+game folder or an unsupported game version) and collects debugging information:
+
+- the editor, operating-system and game versions;
+- which data sources were found and whether they could be read;
+- recent error messages and the last crash report, if any;
+- optionally, a progress summary: unlocked characters, endings, achievements,
+  and the open save's character, layer and run time.
+
+**Create GitHub issue…** opens a pre-filled [bug
+report](https://github.com/PavelKotDRM/casualties_unknown_save_edit/issues/new?template=bug_report.yml)
+in your browser, where you can review it before submitting. If the information
+is too long for a link, it is copied to the clipboard so you can paste it into
+the form. You can also copy the report or save it to a file.
+
+### Privacy
+
+- Nothing is sent automatically. The text shown in the window is exactly what
+  will be shared, and you can edit it.
+- Your user and computer names, home folder, other users' folders, Steam account
+  ids and e-mail addresses are replaced with placeholders such as `~`, `<user>`
+  and `<steam-account>`.
+- Save contents and backups are never included. The progress summary is off
+  unless you enable it.
+- If the editor crashes, a redacted crash report is written to
+  `cu_save_editor/crashes` in the system configuration folder. It stays on your
+  computer until you include it in a report or delete it with *Delete crash
+  reports*.
+
+GitHub issues are public. Do not attach save files you would not want others to
+see.
 
 ## Interface language packs
 
-Put UTF-8 `.json` files in `%APPDATA%\cu_save_editor\languages` on Windows
-(on other platforms, in the `cu_save_editor/languages` folder under the OS
-configuration directory). Create the folder if necessary. See
-[`examples/interface-language.json`](examples/interface-language.json) for the format.
-Each pack needs a unique `code`, a display `name`, and a `translations` object
-mapping exact English interface strings to translated strings. Codes may contain
-ASCII letters, digits and hyphens; `en` and `ru` are reserved. Keep placeholders
-such as `{level}` unchanged. Missing or empty translations fall back to English.
-The built-in [translation table](src/ui/interface_language.rs) lists many
-available source strings; game-provided item and setting names are separate.
+Put UTF-8 `.json` files in the `cu_save_editor/languages` folder of the system
+configuration folder (create it if necessary). See
+[`examples/interface-language.json`](examples/interface-language.json) for the
+format:
+
+- `code`: a unique code of ASCII letters, digits and hyphens (`en` and `ru` are
+  reserved);
+- `name`: the display name;
+- `translations`: exact English interface strings mapped to translated strings.
+  Keep placeholders such as `{level}` unchanged. Missing or empty translations
+  fall back to English.
+
+The built-in [translation table](src/ui/interface_language.rs) lists most source
+strings; game item and setting names come from the game itself.
 
 Restart the editor or use *Game data → Reload interface languages*, then select
-the language in the same menu. Invalid files and duplicate codes are reported
-in the status bar; valid packs remain available. If a selected pack is missing,
-English is used until the pack is restored.
+the language in the same menu. Invalid files and duplicate codes are reported in
+the status bar.
 
-## Project layout
+## Development
 
-- `src/save.rs`: reading/writing (gzip or plain JSON), validation, backups.
-- `src/json.rs`: JSON path and number helpers.
-- `src/schema.rs`, `src/catalog.rs`: field metadata and the game's fallback item / liquid / setting catalogue.
-- `src/game_data.rs`: game installation sync using `dotscope` metadata/IL parsing and `unity-rs-core` asset reading.
-- `src/model.rs`: game-accurate operations (healing, skill levels, inventory grouping).
-- `src/locale.rs`: game installation discovery and game language files.
-- `src/interface_packs.rs`, `src/ui/interface_language.rs`: external and built-in interface translations.
-- `src/ui/`: the egui views. `src/app.rs` and `src/app/view.rs` form the application shell.
+### Project layout
 
-## Testing
+| Path | Purpose |
+| --- | --- |
+| `src/save.rs` | Reading and writing saves (gzip or plain JSON), validation, backups. |
+| `src/json.rs` | JSON path and number helpers. |
+| `src/schema.rs`, `src/schema/` | Field metadata, characters, layers, endings, world settings and presets. |
+| `src/catalog.rs` | Fallback item, liquid and setting catalogue. |
+| `src/game_data.rs`, `src/game_data/` | Item stats from the game's assemblies and Unity assets; item and liquid effects from the game's code. |
+| `src/model.rs` | Game-accurate operations: healing, skill levels, inventory. |
+| `src/locale.rs` | Game installation discovery and language files. |
+| `src/game_info.rs` | Installed game, Unity and Steam versions; supported game version. |
+| `src/achievements.rs` | Steam achievements from Steam's binary stats cache. |
+| `src/player_prefs.rs` | The game's settings outside the save, one backend per platform. |
+| `src/platform.rs` | Everything that depends on the operating system. |
+| `src/diagnostics.rs` | Redaction, error log, problem reports and crash reports. |
+| `src/interface_packs.rs` | External interface language packs. |
+| `src/ui/` | The egui views: tabs, wiki, About, backups, achievements, problem reports. |
+| `src/app.rs`, `src/app/view.rs` | The application shell. |
+
+### Updating for a new game version
+
+Names, descriptions, item stats and effects are read from the installed game,
+so most updates need no changes. Content the editor knows on its own lives in
+data tables:
+
+- characters, layers and hold slots: `src/schema/character.rs`;
+- endings (settings key, achievement, how to reach): `src/schema/endings.rs`;
+- world settings and presets: `src/schema/run.rs`.
+
+Add new entries there; progress tracking, spoiler hiding, the wiki and the About
+window pick them up automatically. Then set `SUPPORTED_GAME_VERSION` in
+`src/game_info.rs` to the new version and run the tests against the game (see
+below).
+
+### Testing
 
 ```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`tests/real_save.rs` round-trips the example save in `Exemple/save.sv`, if it is present.
-To also verify liquid item metadata against an installed game, set
-`CU_GAME_DIR` to the game installation directory before running `cargo test`.
+`tests/real_save.rs` round-trips `Exemple/save.sv` if it is present. To also
+check item stats, the game version and the settings keys against an installed
+game, set `CU_GAME_DIR` to the game folder before running `cargo test`. Tests
+that need the game or a save are skipped otherwise.
+
+### CI/CD and releases
+
+- [`ci.yml`](.github/workflows/ci.yml) checks formatting, then runs Clippy
+  (warnings are errors), the tests and a release build on Windows, Linux and
+  macOS for every push to `main` and every pull request. The executables are
+  uploaded as artifacts.
+- [`release.yml`](.github/workflows/release.yml) runs when a `v*` tag is pushed.
+  It checks that the tag matches the version in `Cargo.toml`, builds and
+  packages all three platforms with build provenance attestations, and publishes
+  a GitHub release with generated notes:
+
+  ```sh
+  git tag v0.1.0
+  git push origin v0.1.0
+  ```
+
+- Actions are pinned to commit SHAs, and [Dependabot](.github/dependabot.yml)
+  opens weekly pull requests to keep them and the Cargo dependencies up to date.
+
+## License
+
+[MIT](LICENSE)

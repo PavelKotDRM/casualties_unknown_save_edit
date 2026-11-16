@@ -585,6 +585,25 @@ pub fn set_skill_level(skills: &mut Map<String, Value>, key: &str, level: i64) {
     }
 }
 
+/// Gives `skills` the starting levels and gain multipliers of a character,
+/// with experience at the start of each level (port of `Skills.Setup`).
+pub fn setup_character_skills(skills: &mut Map<String, Value>, character: usize) {
+    let Some(def) = schema::CHARACTERS.get(character) else {
+        return;
+    };
+    for (index, skill) in schema::SKILLS.iter().enumerate() {
+        let key = skill.key;
+        set_skill_level(skills, key, def.base_skills[index]);
+        let min = get_f64(skills, &format!("min{key}")).unwrap_or(0.0);
+        set_f64(skills, &format!("exp{key}"), min);
+        set_f64(
+            skills,
+            &format!("{key}GainMult"),
+            def.gain_multipliers[index],
+        );
+    }
+}
+
 /// Returns `(level, progress 0..1)` for a skill.
 pub fn skill_progress(skills: &Map<String, Value>, key: &str) -> (i64, f64) {
     let level = get_i64(skills, key).unwrap_or(0);
@@ -856,5 +875,21 @@ mod tests {
         assert_eq!(skills["STRFrom10"], json!(4.0));
         let (_, p) = skill_progress(skills, "STR");
         assert!((p - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn character_setup_uses_the_game_starting_skills() {
+        let mut d = doc();
+        let skills = d["body"]["skills"].as_object_mut().unwrap();
+        setup_character_skills(skills, 2);
+        assert_eq!(skills["STR"], json!(17));
+        assert_eq!(skills["minSTR"], json!(schema::experience_for_level(17)));
+        assert_eq!(
+            skills["expSTR"],
+            json!(schema::experience_for_level(17) as f64)
+        );
+        assert_eq!(skills["INT"], json!(0));
+        assert_eq!(skills["INTGainMult"], json!(0.5));
+        assert_eq!(skills["STRGainMult"], json!(1.0));
     }
 }
