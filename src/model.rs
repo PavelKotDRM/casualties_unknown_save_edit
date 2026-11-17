@@ -5,6 +5,15 @@
 //! skill levels and their experience boundaries. They are UI-independent and
 //! unit tested.
 
+// FIXME: ~850 lines covering four unrelated domains: inventory weights/capacity (`item_weights`,
+// `physical_load`, `container_space`, `carry_load`), inventory structure (`Location`, `ItemGroup`,
+// `group_items`, `new_item`/`add_item`/`remove_item`/`duplicate_item`/`move_*`), body healing
+// (`heal_limbs`, `heal_limb`, `restore_vitals`, `fill_needs`) and skills (`set_skill_level`,
+// `setup_character_skills`, `skill_progress`). Split into `model/{inventory.rs, load.rs,
+// health.rs, skills.rs}` with `model.rs` re-exporting, and move the per-function tests along
+// with them. `carry_load` (~80 lines) should be broken into named steps (base capacity, weight
+// offset, sickness, hunger/thirst, skills) so the hard-coded formula is readable and testable.
+
 use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
@@ -232,6 +241,7 @@ pub fn container_space(
     })
 }
 
+// FIXME: The missing run-setting fallback hard-codes the game's normal `encumbrancecap` value (1.0).
 const DEFAULT_ENCUMBRANCE_CAP: f64 = 1.0;
 
 /// Computes the game's encumbrance value from equipped items, container
@@ -257,6 +267,7 @@ pub fn carry_load(data: &Value, stats: &HashMap<String, ItemStats>) -> Option<Ca
             })
         })
         .unwrap_or(DEFAULT_ENCUMBRANCE_CAP) as f32;
+    // FIXME: This hard-codes the game's carry-capacity formula: base 11; weight offset baseline 15, clamp [-60, 0], factor 0.1; sickness factor 0.025; hunger <= 100 adds 1.5 and < 40 subtracts 1.5; thirst < 40 subtracts 1; STR/RES each scale by 0.5.
     let base_capacity = 11.0 + (weight_offset + 15.0).clamp(-60.0, 0.0) * 0.1 - sickness * 0.025
         + if hunger <= 100.0 { 1.5 } else { 0.0 }
         - if hunger < 40.0 { 1.5 } else { 0.0 }
@@ -317,6 +328,7 @@ pub fn carry_load(data: &Value, stats: &HashMap<String, ItemStats>) -> Option<Ca
 }
 
 fn item_condition(item: &Value) -> f32 {
+    // FIXME: A missing item condition is hard-coded as full condition (1.0).
     item.get("condition")
         .and_then(Value::as_f64)
         .map_or(1.0, |value| value as f32)
@@ -366,6 +378,7 @@ fn arrays_mut(data: &mut Value) -> Option<(&mut Vec<Value>, &mut Vec<Value>)> {
 
 /// Builds a new item object with default values.
 pub fn new_item(id: &str, location: &Location) -> Value {
+    // FIXME: This hard-codes new-item defaults: condition 1.0, no wear slot, not favourited, empty label, and swatch 0.
     let mut item = json!({
         "id": id,
         "condition": 1.0,
@@ -475,6 +488,7 @@ pub fn heal_limbs(data: &mut Value, regrow: bool) {
 
 /// Heals a single limb object (see [`heal_limbs`]).
 pub fn heal_limb(limb: &mut Map<String, Value>, regrow: bool) {
+    // FIXME: Healing hard-codes full skin/muscle health (100), zero pain/bleeding/infection/blood/shrapnel, and clears the listed injury flags.
     if !regrow && limb.get("dismembered").and_then(Value::as_bool) == Some(true) {
         return;
     }
@@ -504,6 +518,7 @@ pub fn restore_vitals(data: &mut Value) {
     let Some(body) = data.get_mut("body").and_then(Value::as_object_mut) else {
         return;
     };
+    // FIXME: These post-heal targets are hard-coded: blood/oxygen/respiration/consciousness/brain health 100, heart rate 70, pressure 120, temperature 37; listed acute-condition values are 0 and forced fibrillation/embolism flags are false.
     let values: &[(&str, f64)] = &[
         ("bloodVolume", 100.0),
         ("bloodOxygen", 100.0),
@@ -543,6 +558,7 @@ pub fn fill_needs(data: &mut Value) {
     let Some(body) = data.get_mut("body").and_then(Value::as_object_mut) else {
         return;
     };
+    // FIXME: This hard-codes filled needs to 100 and dirtiness/wetness to 0.
     for (key, value) in [
         ("hunger", 100.0),
         ("thirst", 100.0),
@@ -561,6 +577,7 @@ pub fn fill_needs(data: &mut Value) {
 /// game does (`Skills.UpdateExpBoundaries`). The relative progress towards the
 /// next level is kept. The derived `<KEY>From10` value is updated as well.
 pub fn set_skill_level(skills: &mut Map<String, Value>, key: &str, level: i64) {
+    // FIXME: The game skill-level range [0, 99] and `<KEY>From10 = level - 10` rule are hard-coded here.
     let level = level.clamp(0, 99);
     let old_min = get_f64(skills, &format!("min{key}")).unwrap_or(0.0);
     let old_max = get_f64(skills, &format!("max{key}")).unwrap_or(0.0);

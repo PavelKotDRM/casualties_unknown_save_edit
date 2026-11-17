@@ -9,6 +9,15 @@
 //! It is a best-effort reading: branches are not followed, so conditional
 //! effects are listed together, and anything it cannot follow is skipped.
 
+// FIXME: ~1100 lines; the public effect types, the IL reader and the symbolic value model all
+// live in one file, and `Reader::analyze` is a ~220-line opcode dispatch with `Reader::call`
+// another ~80. Split into `game_data/effects/{types.rs (Target, Change, Effect, ItemUse,
+// ItemProfile, LiquidProfile, GameEffects), reader.rs (Reader, Definition, Callee, Call,
+// find_method/callee/definitions/profiles), eval.rs (Lin, Obj, Val, arithmetic, is_closure and
+// the index helpers), output.rs (RawChange, Raw, Out, merge)}`. Break `analyze` into per-family
+// handlers (loads/stores, arithmetic, calls, branches) that take an explicit evaluation-state
+// struct instead of threading `closure`/`depth` through every arm.
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use dotscope::CilObject;
@@ -147,6 +156,7 @@ impl GameEffects {
             let Some(liquid) = self.liquids.get(liquid) else {
                 continue;
             };
+            // FIXME: Liquid effects are normalized against a hard-coded 100 ml game-data baseline.
             let scale = ml * amount / total / 100.0;
             let effects = if inject {
                 &liquid.inject

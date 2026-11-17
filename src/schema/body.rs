@@ -3,6 +3,7 @@ use super::*;
 use Good::{High, Low, Near, Neutral};
 
 /// Groups of fields of the `body` object (everything except `skills`).
+// FIXME: Body field IDs, labels, descriptions, gauge ranges/units, and healthy-value targets are hard-coded.
 pub const BODY_GROUPS: &[FieldGroup] = &[
     FieldGroup {
         title: "Circulation & breathing",

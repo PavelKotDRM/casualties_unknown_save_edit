@@ -19,6 +19,7 @@ pub struct EndingDef {
 /// Endings in the order the game numbers its end screens (`EndSequence`
 /// types 1–3). Ported from `WorldGeneration` / `EndLabScript`: add new
 /// endings here and they are tracked everywhere.
+// FIXME: Ending preference/achievement IDs, names, end-screen status text, and unlock descriptions are hard-coded.
 pub const ENDINGS: [EndingDef; 3] = [
     EndingDef {
         pref_key: "didbiopod",

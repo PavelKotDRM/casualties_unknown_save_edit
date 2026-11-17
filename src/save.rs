@@ -16,6 +16,14 @@
 //! file only exists while the game is closed (or in the main menu) after
 //! "Save & Quit".
 
+// FIXME: ~590 lines covering file format (`decode`/`encode`/`validate`/`to_pretty_json`),
+// new-game generation (`new_game_data`, `default_field_value`, ~90 lines of hard-coded defaults),
+// the `SaveFile` handle with atomic writes, backups (`backup_dir`, `create_backup`,
+// `list_backups`, `is_backup`, `backup_source`, `delete_backup`, `Cleanup`, `old_backups`) and
+// `SaveSummary`. Split into `save/{format.rs, new_game.rs, file.rs, backup.rs, summary.rs}` with
+// `save.rs` re-exporting the public API and `SaveError`; the backup tests should then no longer
+// need to set up a full `SaveFile` round trip.
+
 use std::fmt;
 use std::fs;
 use std::io::{Read, Write};
@@ -116,6 +124,7 @@ pub fn validate(value: &Value) -> Result<(), SaveError> {
 
 /// Creates a clean save document using the game's normal world preset.
 pub fn new_game_data() -> Value {
+    // FIXME: The generated save hard-codes desensitization 1, 10 zeroed mood entries, biome/character 0, height 100, age 20, experiment ID 1/version 0, zeroed run counters/timers/calories, rarity multipliers 1, and false run flags.
     let mut body = Map::new();
     for group in schema::BODY_GROUPS {
         for field in group.fields {

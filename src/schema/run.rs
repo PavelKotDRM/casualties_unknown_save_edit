@@ -63,6 +63,7 @@ pub struct RunPreset {
     pub overrides: &'static [(&'static str, PresetValue)],
 }
 
+// FIXME: The normal preset's defaults for every run-setting ID/value are hard-coded.
 const NORMAL_SETTINGS: &[(&str, PresetValue)] = &[
     ("unchipped", PresetValue::Bool(false)),
     ("endless", PresetValue::Bool(false)),
@@ -118,6 +119,7 @@ const NORMAL_SETTINGS: &[(&str, PresetValue)] = &[
 ];
 
 /// Built-in world presets read from the game's `RunSettings` initializer.
+// FIXME: Preset IDs/names and the non-normal setting overrides for Relaxed, Paradise, Desolate, Unchipped, and Endless are hard-coded.
 pub const RUN_PRESETS: &[RunPreset] = &[
     RunPreset {
         id: "normal",
@@ -309,6 +311,7 @@ const fn rs_whole(
 }
 
 /// All run settings known to the game, with the limits of the in-game sliders.
+// FIXME: Run-setting IDs, labels, kinds, slider bounds, dropdown choices, units, and section names are hard-coded.
 pub const RUN_SETTINGS: &[RunSettingDef] = &[
     rs_bool("unchipped", "Unchipped", "Run"),
     rs_bool("endless", "Endless", "Run"),

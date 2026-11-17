@@ -1,5 +1,12 @@
 //! Application menus and windows.
 
+// FIXME: ~890 lines in a single `impl EditorApp` block; `menu_bar` is ~380 lines and `dialogs`
+// ~280, each a long chain of nested `ui.menu_button`/`egui::Window` closures that read and mutate
+// many unrelated `EditorApp` fields. Split into `app/view/{menu.rs, tabs.rs, status.rs, welcome.rs,
+// dialogs.rs}`, and give each modal (pending-action confirmation, new-save wizard, save-as, backup
+// browser, report) its own `fn show(ui, &mut State) -> Option<Action>` so the app only applies
+// returned actions instead of being mutated from inside the UI closures.
+
 use super::*;
 use crate::schema;
 

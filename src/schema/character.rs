@@ -11,6 +11,7 @@ pub struct CharacterDef {
 
 /// Playable characters in the game's order. Character `i > 0` is locked
 /// until a run is won as character `i - 1` (see [`crate::player_prefs`]).
+// FIXME: Character names, starting STR/RES/INT levels, and per-skill XP multipliers are hard-coded.
 pub const CHARACTERS: [CharacterDef; 3] = [
     CharacterDef {
         name: "[SAW-01] \"Experiment\"",
@@ -42,6 +43,7 @@ pub struct HoldSlotDef {
 
 /// The player's hold slots in `Body.slots` order, read from the game's body
 /// prefab; labels match the inventory HUD.
+// FIXME: The six slot names, locale keys, and their game-defined order are hard-coded.
 pub const HOLD_SLOTS: [HoldSlotDef; 6] = [
     HoldSlotDef {
         name: "Right hand",
@@ -89,6 +91,7 @@ pub struct SkillDef {
 }
 
 /// Strength, resilience and intelligence.
+// FIXME: The game skill IDs, display names, locale keys, and help descriptions are hard-coded.
 pub const SKILLS: [SkillDef; 3] = [
     SkillDef {
         key: "STR",
@@ -112,6 +115,7 @@ pub const SKILLS: [SkillDef; 3] = [
 
 /// Total experience required to reach `level`
 /// (port of `Skills.GetExperienceForLevel` from the game).
+// FIXME: The XP curve is hard-coded: 60 XP per level below 10, 100 at level 10, then 1.18 growth, 1.15 after level 20, and a 2x multiplier from level 30.
 pub fn experience_for_level(level: i32) -> i64 {
     if level <= 0 {
         return 0;
@@ -143,6 +147,7 @@ pub fn experience_for_level(level: i32) -> i64 {
 
 /// Display name of a world layer (`biome` stores the layer index the run
 /// resumes on; titles are `layertitle<biome + 1>` in the locale).
+// FIXME: All 11 layer names and their save-index order are hard-coded.
 pub const LAYERS: &[&str] = &[
     "Gravel lands",
     "Deeper gravel lands",

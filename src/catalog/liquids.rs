@@ -1,4 +1,5 @@
 /// All liquid ids registered by the game.
+// FIXME: The supported liquid identifier list is hard-coded.
 pub const LIQUIDS: &[&str] = &[
     "water",
     "carbonatedwater",

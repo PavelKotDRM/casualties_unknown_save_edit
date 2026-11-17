@@ -3,6 +3,13 @@
 //! Several backups can be checked at once, and old ones can be picked by a
 //! cleanup rule (keep the newest N, or older than N days).
 
+// FIXME: ~620 lines; `BackupBrowser` mixes list state (target, checked set, cached summaries,
+// refresh stamps) with rendering (`show`, `header`, `list_ui`, a ~100-line `bulk_ui`, `details`,
+// `comparison`). Separate a UI-free `BackupList` (refresh/select/checked/cleanup selection, fully
+// testable without egui) from the window rendering, move `summary_rows`/`comparison` into a
+// `ui/backups/summary.rs`, and move the file-size/date formatting (`size_text`, `modified_text`,
+// `file_name`) into the shared `ui` text helpers so `overview.rs`/`report.rs` can reuse them.
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;

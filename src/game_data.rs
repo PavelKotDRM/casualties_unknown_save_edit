@@ -1,5 +1,14 @@
 //! Item metadata extracted from the installed game without executing its code.
 
+// FIXME: ~540 lines mixing two unrelated parsers: the .NET IL walk over `Item.SetupItems`
+// (`parse_item_definitions`, ~145 lines, plus `instruction_string`/`instruction_value`/`*_field`)
+// and the raw Unity asset reader (`parse_container_metadata`, ~100 lines, plus
+// `mono_behaviour_data_offset`, `read_aligned_string*`, `read_string_array`, `read_pptr`,
+// `read_i32`, `read_f32`). Move the IL helpers into `game_data/il.rs` (shared with `effects.rs`,
+// which already imports them via `super`) and the asset byte reader into `game_data/assets.rs`
+// with a small cursor type instead of `(bytes, offset)` pairs; keep `ItemStats`, `GameData` and
+// the `load_*` entry points here.
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
@@ -59,6 +68,7 @@ impl ItemStats {
     /// Weight in game units after applying condition scaling, when enabled.
     pub fn total_weight(&self, condition: f32) -> f32 {
         if self.scale_weight_with_condition {
+            // FIXME: The game's condition-scaled minimum item weight (0.1 game units) is hard-coded.
             0.1 + (self.weight - 0.1) * condition.clamp(0.0, 1.0)
         } else {
             self.weight

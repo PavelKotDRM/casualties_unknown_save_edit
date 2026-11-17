@@ -2,6 +2,7 @@ use super::*;
 use Good::{High, Low};
 
 /// Fields of a limb object (except `prostheticInfo`).
+// FIXME: Limb field IDs, labels, descriptions, gauge ranges/units, and healthy-value targets are hard-coded.
 pub const LIMB_FIELDS: &[FieldSpec] = &[
     gauge(
         "skinHealth",
@@ -104,6 +105,7 @@ pub struct LimbDef {
 /// The 15 limbs in the order the game stores them.
 ///
 /// `F` = front (right side), `B` = back (left side).
+// FIXME: The 15 limb object IDs, display names, and save-array order are hard-coded.
 pub const LIMBS: [LimbDef; 15] = [
     LimbDef {
         object: "Head",

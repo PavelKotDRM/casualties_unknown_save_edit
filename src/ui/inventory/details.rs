@@ -1,3 +1,11 @@
+// FIXME: ~620 lines with no module docs; `details` is a ~260-line function that renders the item
+// header, location/move controls, stats, warnings, the item fields and every component editor in
+// one body, and `liquid_editor` is another ~110 lines. Split `details` into `header`, `placement`,
+// `stats_panel` and `warnings` helpers, and move the component editors (`components_editor`,
+// `generic_component`, `liquid_editor`, `battery_editor`, `swatch_picker`/`SWATCH_COLORS`) into
+// `ui/inventory/components.rs`. `ensure_components` mutates the save document and belongs in
+// `model` next to `add_item`/`move_to_location`, which already keep `items`/`itemComponents`
+// aligned.
 use std::collections::HashMap;
 
 use egui::{ProgressBar, RichText, Ui};

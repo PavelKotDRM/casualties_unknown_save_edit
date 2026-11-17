@@ -38,6 +38,7 @@ unmodified file is written back byte-for-byte identical.
     - [Testing](#testing)
     - [CI/CD and releases](#cicd-and-releases)
   - [License](#license)
+  - [TODO](#todo)
 
 ## Features
 
@@ -340,3 +341,10 @@ builds contain no game files: names, descriptions, item stats and effects are
 read at run time from the copy of the game installed on your computer. You need
 your own copy of the game, available on
 [Steam](https://store.steampowered.com/app/4576490/).
+
+## TODO
+
+Fix the issues related to Linux; there are no games in the system, but progress is considered completely completed.
+Fix All hardcoded parameters need to be removed, and data should be retrieved from the game. Presets, characters, endings, items. The app is empty without the game.
+Add an auto‑balancer for containers to achieve optimal weight distribution.
+Improve the performance of the Wiki with item listings when there are a large number of items.

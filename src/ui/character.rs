@@ -342,6 +342,7 @@ fn skill_row(
         if ui
             .add(
                 egui::DragValue::new(&mut new_level)
+                    // FIXME: The character editor hard-codes the game's skill-level range [0, 99].
                     .range(0..=99)
                     .speed(0.1),
             )

@@ -4,6 +4,14 @@
 //! widgets shared between them: colour-coded gauges similar to the in-game
 //! health screen, field editors for JSON values and display-name lookup.
 
+// FIXME: ~700 lines; besides the module declarations this file holds shared widgets
+// (`gauge_bar`, `mini_gauge`, `number_editor`, `field_row`, `generic_row`, `other_fields`,
+// `section_heading`, `card`, `bounded_window`), colour helpers (`colors`, `quality_color`,
+// `value_color`) and a ~220-line `impl Names` of display-name lookups plus string utilities
+// (`prettify_id`, `strip_rich_text`, `category_icon`, `fmt_num`). Split into `ui/widgets.rs`,
+// `ui/colors.rs`, `ui/names.rs` and `ui/text.rs`, leaving `mod.rs` with declarations and
+// re-exports only.
+
 pub mod about;
 pub mod achievements;
 pub mod backups;

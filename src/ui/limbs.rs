@@ -1,6 +1,14 @@
 //! Limbs tab: a painted body figure (like the in-game health screen) and an
 //! editor for the selected limb.
 
+// FIXME: ~525 lines; `body_figure` is a ~145-line painter routine (layout, hit testing, fill
+// colours, fracture/dismemberment marks, tooltips) and `legend` ~75 lines of hand-placed swatches,
+// both sitting next to the limb editor/table. Move the figure painting (`FIGURE`, `body_figure`,
+// `small_figure`, `fracture_mark`, `legend`) into `ui/limbs/figure.rs` with the geometry
+// separated from the painting, and move `limb_condition`/`limb_problems` (pure save-document
+// logic that is `pub` but only needed by the UI here) into `model::health` so `diagnostics.rs`
+// and the report can share them instead of re-deriving limb state.
+
 use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use serde_json::Value;
 

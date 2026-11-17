@@ -2,6 +2,15 @@
 //! format and the game's own language files: characters, skills, body stats,
 //! limbs, status effects, world settings, presets, layers and items.
 
+// FIXME: 1400+ lines mixing three concerns: the wiki shell (`WikiState`, `show`, `contents`,
+// `search`, `article`, `highlighted`, `entry_card`), the per-section content builders (`endings`,
+// `characters`, `skills`, `limbs`, `conditions`, `run_settings`, `presets`, `layers`, `items`,
+// `liquids`) and the effect-formatting helpers (`item_effects`, `item_use_lists`, `effect_line`,
+// `stat_label`, `fmt_duration`, `signed`, `qualities`). Split into `ui/wiki/mod.rs` (state,
+// rendering, search), `ui/wiki/entries/<section>.rs` (one module per `Section`, each exposing
+// `fn entries(&Sources) -> Vec<Entry>`) and `ui/wiki/effects.rs`; move `fold`/`search_terms`
+// into a shared text-search helper so other tabs can reuse them.
+
 use std::collections::HashMap;
 
 use egui::text::LayoutJob;

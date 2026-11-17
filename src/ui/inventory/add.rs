@@ -1,3 +1,10 @@
+// FIXME: ~750 lines with no module docs; `add_window` is ~150 lines and `destination_status`
+// ~215 lines of nested `if`/`match` deciding whether an item fits a destination (holder rules, wear
+// slot, container tags, weight, remaining capacity). Extract the validation into a UI-free
+// `model::placement::check_destination(data, stats, item, location) -> Result<(), Rejection>`
+// enum, map `Rejection` to text in one `fn rejection_text(names, Rejection)`, and have both
+// `destination_status` and `destination_status_for_move` call it. Move the ~230 lines of tests
+// with the extracted logic so they no longer need to construct egui `Names`.
 use std::collections::HashMap;
 
 use egui::{RichText, Ui};

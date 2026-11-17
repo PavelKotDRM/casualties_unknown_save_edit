@@ -1,6 +1,15 @@
 //! Inventory tab: items grouped by location (held slot / worn slot) with the
 //! container contents, an item details editor and an "add item" catalogue.
 
+// FIXME: ~790 lines; the holder/placement rules (`HolderRules`, `holder_rules`,
+// `missing_wear_limb`, `default_location`, `location_choices`, `holder_location_allowed`,
+// `item_wear_slot`, `is_hand_slot`) are pure save-document logic but live in the UI module and
+// are re-imported by `add.rs`/`details.rs` through `super::*`. Move them into
+// `model::inventory` (or a new `model/placement.rs`) with their tests, and move `location_name`/
+// `location_icon`/`location_combo` into a small `ui/inventory/location.rs`. `show` (~120 lines)
+// and `item_list` (~130 lines) should be split so the per-group header, the nested container
+// rows and the drag/reorder handling are separate functions.
+
 mod add;
 mod details;
 

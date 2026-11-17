@@ -1,5 +1,15 @@
 //! The egui application: menus, tabs, undo/redo, backups and file handling.
 
+// FIXME: 1250+ lines; `impl EditorApp` is a god object covering config persistence (`Config`),
+// font setup, undo/redo history (`commit`/`undo`/`redo`/`reset_history`), file I/O
+// (`load`/`save`/`save_as`/`export_json`/`import_json`/`create_new_save`), the new-save wizard,
+// backups (`manual_backup`/`restore_backup`/`backup_action`), achievements/interface-pack refresh,
+// problem detection and a ~160-line `diagnostic_report`. Extract: `app/config.rs` (Config +
+// load/store), `app/history.rs` (an `UndoStack<Value>` with MAX_UNDO), `app/files.rs` (open/save/
+// import/export/new-save actions returning `Result` instead of calling `self.error` inline),
+// `app/backups.rs`, and `app/diagnostics.rs` (`problems`, `diagnostic_report`, `report_action`).
+// Keep this file for `EditorApp` fields, `new`, `shortcuts` and the `eframe::App` impl.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
