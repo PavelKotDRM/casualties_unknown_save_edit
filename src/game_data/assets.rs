@@ -1,0 +1,703 @@
+//! Bounded readers for Unity 2022 serialized player and item prefabs.
+
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+
+use dotscope::CilObject;
+use dotscope::metadata::signatures::TypeSignature;
+use dotscope::metadata::tables::FieldAttributes;
+use unity_rs_core::studio::{Studio, StudioObject};
+
+use super::ItemStats;
+use super::metadata::Metadata;
+use super::runtime::intern;
+use crate::schema::{HoldSlotDef, LimbDef};
+
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+fn enum_constant(assembly: &CilObject, owner: &str, name: &str) -> Option<i64> {
+    assembly.types().iter().find_map(|entry| {
+        let ty = entry.value();
+        (ty.name == owner)
+            .then(|| {
+                ty.fields().find_map(|field| {
+                    (field.name == name)
+                        .then(|| field.default.get()?.as_i64())
+                        .flatten()
+                })
+            })
+            .flatten()
+    })
+}
+
+pub(super) fn ammunition(
+    data_dir: &Path,
+    assembly: &CilObject,
+) -> Result<super::ammunition::AmmunitionData, String> {
+    use super::ammunition::{AmmoDef, AmmunitionData, ChamberValues, GunDef};
+    use std::collections::BTreeMap;
+
+    let constant = |owner, name| {
+        enum_constant(assembly, owner, name)
+            .ok_or_else(|| format!("Game ammunition enum {owner}.{name} is unavailable"))
+    };
+    let magazine_kind = constant("AmmoItemType", "Magazine")?;
+    let round_kind = constant("AmmoItemType", "Round")?;
+    let magazine_feed = constant("FeedType", "Mag")?;
+    let direct_feed = constant("FeedType", "Direct")?;
+    let chamber = ChamberValues {
+        round: constant("RoundInChamber", "Round")?,
+        casing: constant("RoundInChamber", "Casing")?,
+        empty: constant("RoundInChamber", "None")?,
+    };
+    let studio = Studio::open(data_dir).map_err(|error| error.to_string())?;
+    let mut ids = HashMap::new();
+    for object in studio
+        .objects()
+        .filter(|o| o.class_id() == 114 && o.name() == Some("Item"))
+    {
+        let bytes = object.read_raw(1024 * 1024).map_err(|e| e.to_string())?;
+        let mut cursor = Cursor {
+            bytes: &bytes,
+            offset: 0,
+        };
+        let reference = cursor
+            .reference()
+            .ok_or("Truncated ammunition item reference")?;
+        cursor.offset =
+            mono_behaviour_data_offset(&bytes).ok_or("Invalid ammunition item header")?;
+        let id = cursor.string().ok_or("Invalid ammunition item ID")?;
+        let resource = studio
+            .object(object.file_index(), reference.1)
+            .is_some_and(|object| {
+                object.container().is_some_and(|resource| {
+                    let name = resource.rsplit(['/', '\\']).next().unwrap_or(resource);
+                    name.strip_suffix(".prefab")
+                        .unwrap_or(name)
+                        .eq_ignore_ascii_case(&id)
+                })
+            });
+        if reference.0 == 0 && resource {
+            ids.insert((object.file_index(), reference.1), id);
+        }
+    }
+    let reader = super::metadata::Reader::new(assembly);
+    let magazine_resources: HashSet<_> = reader
+        .method("AmmoScript", "AmmoTypeToMagazine")
+        .ok_or("Missing AmmoScript.AmmoTypeToMagazine")?
+        .instructions()
+        .filter(|instruction| instruction.mnemonic == "ldstr")
+        .filter_map(|instruction| super::instruction_string(instruction, assembly.userstrings()))
+        .collect();
+    let mut items = BTreeMap::new();
+    let mut guns = BTreeMap::new();
+    for owner in ["AmmoScript", "GunScript"] {
+        let fields = assembly
+            .types()
+            .iter()
+            .find_map(|entry| {
+                let ty = entry.value();
+                (ty.name == owner).then(|| {
+                    ty.fields()
+                        .filter(|field| {
+                            !field.flags.is_static()
+                                && !field.flags.is_not_serialized()
+                                && field.flags.access() == FieldAttributes::PUBLIC
+                        })
+                        .map(|field| (field.name.clone(), field.signature.base.clone()))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .ok_or_else(|| format!("Missing game type {owner}"))?;
+        let saved: HashSet<_> = assembly
+            .types()
+            .iter()
+            .filter(|entry| entry.value().name == owner)
+            .flat_map(|entry| {
+                entry
+                    .value()
+                    .fields()
+                    .filter(|field| {
+                        field.custom_attributes.iter().any(|(_, attribute)| {
+                            matches!(&attribute.constructor,
+                    dotscope::metadata::typesystem::CilTypeReference::MemberRef(member)
+                    if member.declaredby.name().as_deref() == Some("JsonPropertyAttribute"))
+                        })
+                    })
+                    .map(|field| field.name.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let constructor = super::metadata::constructor_defaults(&reader, owner);
+        for object in studio
+            .objects()
+            .filter(|o| o.class_id() == 114 && o.name() == Some(owner))
+        {
+            let bytes = object.read_raw(1024 * 1024).map_err(|e| e.to_string())?;
+            let mut cursor = Cursor {
+                bytes: &bytes,
+                offset: 0,
+            };
+            let (file, path) = cursor
+                .reference()
+                .ok_or("Truncated ammunition component reference")?;
+            let Some(id) = (file == 0)
+                .then(|| ids.get(&(object.file_index(), path)))
+                .flatten()
+            else {
+                continue;
+            };
+            cursor.offset =
+                mono_behaviour_data_offset(&bytes).ok_or("Invalid ammunition component header")?;
+            let mut values: serde_json::Map<_, _> = constructor.clone().into_iter().collect();
+            for (name, ty) in &fields {
+                let Some(value) = cursor.value(assembly, ty) else {
+                    break;
+                };
+                values.insert(name.clone(), value);
+            }
+            let integer = |key| {
+                values
+                    .get(key)
+                    .and_then(serde_json::Value::as_i64)
+                    .ok_or_else(|| format!("Missing ammunition field {owner}.{key} for {id}"))
+            };
+            let ammo_type = integer("ammoType")?;
+            let kind = if owner == "AmmoScript" {
+                integer("itemType")?
+            } else {
+                integer("feedType")?
+            };
+            let defaults = values
+                .into_iter()
+                .filter(|(key, _)| saved.contains(key))
+                .collect();
+            if owner == "AmmoScript" {
+                if kind != magazine_kind && kind != round_kind {
+                    return Err(format!("Unsupported ammunition kind for {id}"));
+                }
+                let def = AmmoDef {
+                    ammo_type,
+                    magazine: kind == magazine_kind,
+                    insertable: kind == magazine_kind && magazine_resources.contains(id),
+                    defaults,
+                };
+                if items.get(id).is_some_and(|previous| previous != &def) {
+                    return Err(format!("Conflicting ammunition prefabs for {id}"));
+                }
+                items.insert(id.clone(), def);
+            } else {
+                if kind != magazine_feed && kind != direct_feed {
+                    return Err(format!("Unsupported weapon feed type for {id}"));
+                }
+                let def = GunDef {
+                    ammo_type,
+                    magazine_fed: kind == magazine_feed,
+                    defaults,
+                };
+                if guns.get(id).is_some_and(|previous| previous != &def) {
+                    return Err(format!("Conflicting weapon prefabs for {id}"));
+                }
+                guns.insert(id.clone(), def);
+            }
+        }
+    }
+    Ok(AmmunitionData {
+        items,
+        guns,
+        chamber,
+    })
+}
+
+impl<'a> Cursor<'a> {
+    fn skip(&mut self, count: usize) -> Option<()> {
+        self.offset = self.offset.checked_add(count)?;
+        (self.offset <= self.bytes.len()).then_some(())
+    }
+
+    fn i32(&mut self) -> Option<i32> {
+        let value = read_i32(self.bytes, self.offset)?;
+        self.skip(4)?;
+        Some(value)
+    }
+
+    fn reference(&mut self) -> Option<(i32, i64)> {
+        let file = self.i32()?;
+        let value = i64::from_le_bytes(
+            self.bytes
+                .get(self.offset..self.offset.checked_add(8)?)?
+                .try_into()
+                .ok()?,
+        );
+        self.skip(8)?;
+        Some((file, value))
+    }
+
+    fn f32(&mut self) -> Option<f32> {
+        Some(f32::from_bits(self.i32()? as u32))
+    }
+
+    fn strings(&mut self) -> Option<Vec<String>> {
+        let count = usize::try_from(self.i32()?)
+            .ok()
+            .filter(|count| *count <= 1024)?;
+        (0..count).map(|_| self.string()).collect()
+    }
+
+    fn string(&mut self) -> Option<String> {
+        let (value, next) = read_aligned_string_at(self.bytes, self.offset)?;
+        if next > self.bytes.len() {
+            return None;
+        }
+        self.offset = next;
+        Some(value)
+    }
+}
+
+fn read_i32(bytes: &[u8], offset: usize) -> Option<i32> {
+    Some(i32::from_le_bytes(
+        bytes.get(offset..offset.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+fn read_aligned_string_at(bytes: &[u8], offset: usize) -> Option<(String, usize)> {
+    let length = usize::try_from(read_i32(bytes, offset)?)
+        .ok()
+        .filter(|length| *length <= 16 * 1024 * 1024)?;
+    let start = offset.checked_add(4)?;
+    let end = start.checked_add(length)?;
+    let next = end.checked_add(3)? & !3;
+    if next > bytes.len() {
+        return None;
+    }
+    Some((
+        std::str::from_utf8(bytes.get(start..end)?).ok()?.to_owned(),
+        next,
+    ))
+}
+
+fn mono_behaviour_data_offset(bytes: &[u8]) -> Option<usize> {
+    read_aligned_string_at(bytes, 28).map(|(_, next)| next)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ContainerMetadata {
+    capacity: f32,
+    max_item_weight: f32,
+    encumbrance: f32,
+    tags: HashSet<String>,
+}
+
+pub(super) fn containers(
+    data_dir: &Path,
+    assembly: &CilObject,
+    items: &mut HashMap<String, ItemStats>,
+) -> Result<(), String> {
+    let reader = super::metadata::Reader::new(assembly);
+    let mut initializers = HashMap::new();
+    if let Some(method) = reader.method("Container", "Awake") {
+        let instructions: Vec<_> = method.instructions().collect();
+        for (index, instruction) in instructions.iter().enumerate() {
+            if instruction.mnemonic != "stfld" {
+                continue;
+            }
+            let Some((owner, field)) = reader.field(&instruction.operand) else {
+                continue;
+            };
+            if owner != "Container" || !matches!(field.as_str(), "maxWeight" | "maxWeightPerItem") {
+                continue;
+            }
+            let expression = index
+                .checked_sub(4)
+                .and_then(|start| {
+                    super::program::ScalarProgram::read(assembly, &instructions[start..=index])
+                })
+                .ok_or_else(|| format!("Unsupported container initializer for {field}"))?;
+            if initializers.insert(field.clone(), expression).is_some() {
+                return Err(format!("Multiple container initializers for {field}"));
+            }
+        }
+    }
+    let studio = Studio::open(data_dir).map_err(|error| {
+        format!(
+            "Cannot read Unity assets in {}: {error}",
+            data_dir.display()
+        )
+    })?;
+    let version = studio
+        .files()
+        .next()
+        .map(|file| file.unity_version().to_owned())
+        .ok_or("Unity data directory contains no serialized files")?;
+    if !version.starts_with("2022.") {
+        return Err(format!(
+            "Unsupported Unity serialization version {version:?}"
+        ));
+    }
+    let mut containers = HashMap::new();
+    for object in studio
+        .objects()
+        .filter(|object| object.class_id() == 114 && object.name() == Some("Container"))
+    {
+        let bytes = object.read_raw(4096).map_err(|error| error.to_string())?;
+        let mut cursor = Cursor {
+            bytes: &bytes,
+            offset: 0,
+        };
+        let (file, path) = cursor
+            .reference()
+            .ok_or("Truncated container GameObject reference")?;
+        if file != 0 {
+            continue;
+        }
+        cursor.offset =
+            mono_behaviour_data_offset(&bytes).ok_or("Invalid Container MonoBehaviour header")?;
+        let valid = |value: f32| (value.is_finite() && value >= 0.0).then_some(value);
+        let mut capacity = cursor
+            .f32()
+            .and_then(valid)
+            .ok_or("Invalid container capacity")?;
+        let mut max_item_weight = cursor
+            .f32()
+            .and_then(valid)
+            .ok_or("Invalid container maximum item weight")?;
+        let encumbrance = cursor
+            .f32()
+            .and_then(valid)
+            .ok_or("Invalid container encumbrance multiplier")?;
+        // Awake applies the game's own rounding allowance to prefab limits.
+        let fields = HashMap::from([
+            ("maxWeight".into(), capacity),
+            ("maxWeightPerItem".into(), max_item_weight),
+        ]);
+        for (field, value) in [
+            ("maxWeight", &mut capacity),
+            ("maxWeightPerItem", &mut max_item_weight),
+        ] {
+            if let Some(initializer) = initializers.get(field) {
+                *value = initializer
+                    .evaluate_fields(None, &fields)
+                    .and_then(valid)
+                    .ok_or_else(|| format!("Cannot evaluate container initializer for {field}"))?;
+            }
+        }
+        cursor.skip(4).ok_or("Truncated container fields")?;
+        let metadata = ContainerMetadata {
+            capacity,
+            max_item_weight,
+            encumbrance,
+            tags: cursor
+                .strings()
+                .ok_or("Invalid container tag restrictions")?
+                .into_iter()
+                .collect(),
+        };
+        let game_object = studio
+            .object(object.file_index(), path)
+            .ok_or("Missing container GameObject")?;
+        let bytes = game_object
+            .read_raw(1024 * 1024)
+            .map_err(|error| error.to_string())?;
+        let mut cursor = Cursor {
+            bytes: &bytes,
+            offset: 0,
+        };
+        let count = usize::try_from(cursor.i32().ok_or("Missing component count")?)
+            .ok()
+            .filter(|count| *count <= 1024)
+            .ok_or("Invalid component count")?;
+        for _ in 0..count {
+            let (file, path) = cursor.reference().ok_or("Truncated component reference")?;
+            if file != 0 {
+                continue;
+            }
+            let Some(item) = studio.object(object.file_index(), path) else {
+                continue;
+            };
+            if item.class_id() != 114 || item.name() != Some("Item") {
+                continue;
+            }
+            let bytes = item
+                .read_raw(1024 * 1024)
+                .map_err(|error| error.to_string())?;
+            let offset =
+                mono_behaviour_data_offset(&bytes).ok_or("Invalid Item MonoBehaviour header")?;
+            let id = Cursor {
+                bytes: &bytes,
+                offset,
+            }
+            .string()
+            .ok_or("Invalid container item ID")?;
+            if containers
+                .get(&id)
+                .is_some_and(|previous| previous != &metadata)
+            {
+                return Err(format!(
+                    "Container metadata for item {id:?} has conflicting values"
+                ));
+            }
+            containers.insert(id, metadata.clone());
+        }
+    }
+    for (id, metadata) in containers {
+        if let Some(item) = items.get_mut(&id) {
+            item.container_capacity = Some(metadata.capacity);
+            item.container_max_item_weight = Some(metadata.max_item_weight);
+            item.container_encumbrance = Some(metadata.encumbrance);
+            item.container_tag_restriction = Some(metadata.tags);
+        }
+    }
+    Ok(())
+}
+
+impl<'a> Cursor<'a> {
+    fn align(&mut self) -> Option<()> {
+        let aligned = self.offset.checked_add(3)? & !3;
+        self.skip(aligned - self.offset)
+    }
+
+    fn value(&mut self, assembly: &CilObject, ty: &TypeSignature) -> Option<serde_json::Value> {
+        use serde_json::json;
+        Some(match ty {
+            TypeSignature::Boolean => {
+                let value = *self.bytes.get(self.offset)? != 0;
+                self.skip(1)?;
+                self.align()?;
+                json!(value)
+            }
+            TypeSignature::I4 => json!(self.i32()?),
+            TypeSignature::R4 => json!(f32::from_bits(self.i32()? as u32)),
+            TypeSignature::String => json!(self.string()?),
+            TypeSignature::SzArray(array) => {
+                let count = usize::try_from(self.i32()?)
+                    .ok()
+                    .filter(|count| *count <= 4096)?;
+                let mut values = Vec::with_capacity(count);
+                for _ in 0..count {
+                    values.push(self.value(assembly, &array.base)?);
+                }
+                json!(values)
+            }
+            TypeSignature::Class(token) | TypeSignature::ValueType(token) => {
+                let definition = assembly.types().get(token);
+                if definition
+                    .as_ref()
+                    .is_some_and(|ty| ty.fields().any(|field| field.name == "value__"))
+                {
+                    return Some(json!(self.i32()?));
+                }
+                let name = definition.as_ref().map(|ty| ty.name.as_str()).unwrap_or("");
+                match name {
+                    "Vector2" => {
+                        self.skip(8)?;
+                        serde_json::Value::Null
+                    }
+                    "Vector3" => {
+                        self.skip(12)?;
+                        serde_json::Value::Null
+                    }
+                    "AnimationCurve" => {
+                        let count = usize::try_from(self.i32()?)
+                            .ok()
+                            .filter(|count| *count <= 4096)?;
+                        self.skip(count.checked_mul(28)?.checked_add(12)?)?;
+                        serde_json::Value::Null
+                    }
+                    _ if matches!(ty, TypeSignature::Class(_)) => {
+                        let (file, path) = self.reference()?;
+                        json!([file, path])
+                    }
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        })
+    }
+}
+
+fn object_name(object: StudioObject<'_>) -> Option<String> {
+    let bytes = object.read_raw(1024 * 1024).ok()?;
+    let mut cursor = Cursor {
+        bytes: &bytes,
+        offset: 0,
+    };
+    let count = usize::try_from(cursor.i32()?)
+        .ok()
+        .filter(|count| *count <= 4096)?;
+    cursor.skip(count.checked_mul(12)?.checked_add(4)?)?;
+    cursor.string()
+}
+
+fn component_name(studio: &Studio, file: usize, path: i64) -> Option<String> {
+    let component = studio.object(file, path)?;
+    let bytes = component.read_raw(1024 * 1024).ok()?;
+    let mut cursor = Cursor {
+        bytes: &bytes,
+        offset: 0,
+    };
+    let (other, path) = cursor.reference()?;
+    if other != 0 {
+        return None;
+    }
+    object_name(studio.object(file, path)?)
+}
+
+pub(super) fn player(
+    data_dir: &Path,
+    assembly: &CilObject,
+    metadata: &mut Metadata,
+    locale: Option<&crate::locale::Locale>,
+) -> Result<(), String> {
+    let studio = Studio::open(data_dir).map_err(|error| error.to_string())?;
+    let fields = assembly
+        .types()
+        .iter()
+        .find_map(|entry| {
+            let ty = entry.value();
+            (ty.name == "Body").then(|| {
+                ty.fields()
+                    .filter(|field| {
+                        !field.flags.is_static()
+                            && !field.flags.is_not_serialized()
+                            && field.flags.access() == FieldAttributes::PUBLIC
+                    })
+                    .map(|field| (field.name.clone(), field.signature.base.clone()))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .unwrap_or_default();
+    for object in studio
+        .objects()
+        .filter(|object| object.class_id() == 114 && object.name() == Some("Body"))
+    {
+        let bytes = object
+            .read_raw(4 * 1024 * 1024)
+            .map_err(|error| error.to_string())?;
+        let Some(offset) = mono_behaviour_data_offset(&bytes) else {
+            continue;
+        };
+        let mut cursor = Cursor {
+            bytes: &bytes,
+            offset,
+        };
+        let mut limbs = Vec::new();
+        let mut slots = Vec::new();
+        let mut defaults = metadata.body_defaults.clone();
+        for (field, ty) in &fields {
+            let Some(value) = cursor.value(assembly, ty) else {
+                break;
+            };
+            if field == "limbs" || field == "slots" {
+                let Some(values) = value.as_array() else {
+                    break;
+                };
+                let mut names = Vec::new();
+                for reference in values {
+                    let Some(file) = reference[0].as_i64() else {
+                        break;
+                    };
+                    let Some(path) = reference[1].as_i64() else {
+                        break;
+                    };
+                    if file != 0 {
+                        break;
+                    }
+                    let Some(name) = component_name(&studio, object.file_index(), path) else {
+                        break;
+                    };
+                    names.push(name);
+                }
+
+                if names.len() != values.len() {
+                    break;
+                }
+                if field == "limbs" {
+                    limbs = names;
+                } else {
+                    slots = names;
+                    break;
+                }
+            } else if defaults.contains_key(field) && !value.is_null() {
+                defaults.insert(field.clone(), value);
+            }
+        }
+        if limbs.is_empty() || slots.is_empty() {
+            continue;
+        }
+        let limb_defs: Vec<_> = limbs
+            .iter()
+            .map(|name| LimbDef {
+                object: intern(name),
+                name: intern(locale.and_then(|locale| locale.other(name)).unwrap_or(name)),
+            })
+            .collect();
+        let slot_defs: Vec<_> = slots
+            .iter()
+            .map(|name| HoldSlotDef {
+                name: intern(locale.and_then(|locale| locale.other(name)).unwrap_or(name)),
+                locale_key: intern(name),
+                icon: "",
+            })
+            .collect();
+        if !metadata.limbs.is_empty()
+            && (metadata.limbs != limb_defs || metadata.hold_slots != slot_defs)
+        {
+            return Err(
+                "Player prefab candidates have conflicting limb or inventory slot order".into(),
+            );
+        }
+        metadata.limbs = limb_defs;
+        metadata.hold_slots = slot_defs;
+        metadata.body_defaults = defaults;
+    }
+    if metadata.limbs.is_empty() {
+        return Err("Cannot decode player prefab limb and inventory slot order".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_array_reads_alignment_and_rejects_truncation() {
+        let mut bytes = 2_i32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&6_i32.to_le_bytes());
+        bytes.extend_from_slice(b"bullet");
+        bytes.extend_from_slice(&[0, 0]);
+        bytes.extend_from_slice(&7_i32.to_le_bytes());
+        bytes.extend_from_slice(b"battery");
+        bytes.push(0);
+        assert_eq!(
+            Cursor {
+                bytes: &bytes,
+                offset: 0
+            }
+            .strings(),
+            Some(vec!["bullet".into(), "battery".into()])
+        );
+        assert_eq!(
+            Cursor {
+                bytes: &bytes[..bytes.len() - 3],
+                offset: 0
+            }
+            .strings(),
+            None
+        );
+    }
+
+    #[test]
+    fn mono_header_rejects_truncated_alignment() {
+        let mut bytes = vec![0; 28];
+        bytes.extend_from_slice(&3_i32.to_le_bytes());
+        bytes.extend_from_slice(b"Bag");
+        bytes.push(0);
+        assert_eq!(mono_behaviour_data_offset(&bytes), Some(36));
+        assert_eq!(mono_behaviour_data_offset(&bytes[..35]), None);
+        assert_eq!(mono_behaviour_data_offset(&bytes[..34]), None);
+    }
+}

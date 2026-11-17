@@ -184,39 +184,39 @@ fn quick_fixes(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
             )
             .clicked()
         {
-            model::heal_limbs(data, false);
-            changed = true;
+            changed |= super::operation_result(ui, model::heal_limbs(data, false));
         }
         if ui
             .button(format!("✚ {}", names.text("Heal + regrow limbs")))
             .clicked()
         {
-            model::heal_limbs(data, true);
-            changed = true;
+            changed |= super::operation_result(ui, model::heal_limbs(data, true));
         }
         if ui
             .button(format!("❤ {}", names.text("Restore vitals")))
             .clicked()
         {
-            model::restore_vitals(data);
-            changed = true;
+            changed |= super::operation_result(ui, model::restore_vitals(data));
         }
         if ui
             .button(format!("🍖 {}", names.text("Fill needs")))
             .clicked()
         {
-            model::fill_needs(data);
-            changed = true;
+            changed |= super::operation_result(ui, model::fill_needs(data));
         }
         if ui
             .button(format!("🌟 {}", names.text("Full recovery")))
             .on_hover_text(names.text("All of the above").to_string())
             .clicked()
         {
-            model::heal_limbs(data, true);
-            model::restore_vitals(data);
-            model::fill_needs(data);
-            changed = true;
+            let mut recovered = data.clone();
+            let result = model::heal_limbs(&mut recovered, true)
+                .and_then(|()| model::restore_vitals(&mut recovered))
+                .and_then(|()| model::fill_needs(&mut recovered));
+            if super::operation_result(ui, result) {
+                *data = recovered;
+                changed = true;
+            }
         }
     });
     ui.weak(

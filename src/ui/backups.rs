@@ -3,22 +3,19 @@
 //! Several backups can be checked at once, and old ones can be picked by a
 //! cleanup rule (keep the newest N, or older than N days).
 
-// FIXME: ~620 lines; `BackupBrowser` mixes list state (target, checked set, cached summaries,
-// refresh stamps) with rendering (`show`, `header`, `list_ui`, a ~100-line `bulk_ui`, `details`,
-// `comparison`). Separate a UI-free `BackupList` (refresh/select/checked/cleanup selection, fully
-// testable without egui) from the window rendering, move `summary_rows`/`comparison` into a
-// `ui/backups/summary.rs`, and move the file-size/date formatting (`size_text`, `modified_text`,
-// `file_name`) into the shared `ui` text helpers so `overview.rs`/`report.rs` can reuse them.
-
 use std::collections::BTreeSet;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use egui::{RichText, Ui};
 
+use super::text::{file_name, modified_text, size_text};
 use super::{Names, colors};
 use crate::save::{self, BackupInfo, Cleanup, SaveSummary};
-use crate::schema;
+
+mod summary;
+use summary::comparison;
 
 /// What the user asked the browser to do; carried out by the application.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,9 +33,17 @@ pub enum BackupAction {
 }
 
 /// State of the backup browser window.
+#[derive(Default)]
 pub struct BackupBrowser {
     /// Whether the window is shown.
     pub open: bool,
+    state: BackupList,
+    /// Area of the window in the last frame.
+    rect: Option<egui::Rect>,
+}
+
+/// UI-independent list, selection, and preview state for a save's backups.
+pub struct BackupList {
     /// Save whose backups are listed.
     target: Option<PathBuf>,
     /// Backups of [`Self::target`], newest first.
@@ -57,14 +62,11 @@ pub struct BackupBrowser {
     cleanup: Cleanup,
     /// What the list was built from, to notice changes on disk.
     stamp: Vec<(PathBuf, Option<SystemTime>, u64)>,
-    /// Area of the window in the last frame.
-    rect: Option<egui::Rect>,
 }
 
-impl Default for BackupBrowser {
+impl Default for BackupList {
     fn default() -> Self {
         Self {
-            open: false,
             target: None,
             list: Vec::new(),
             selected: None,
@@ -74,8 +76,21 @@ impl Default for BackupBrowser {
             confirm_delete: None,
             cleanup: Cleanup::KeepNewest(10),
             stamp: Vec::new(),
-            rect: None,
         }
+    }
+}
+
+impl Deref for BackupBrowser {
+    type Target = BackupList;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl DerefMut for BackupBrowser {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
     }
 }
 
@@ -99,9 +114,11 @@ impl BackupBrowser {
     /// Opens the window for the backups of `target`.
     pub fn show_for(&mut self, target: Option<PathBuf>) {
         self.open = true;
-        self.refresh(target);
+        self.state.refresh(target);
     }
+}
 
+impl BackupList {
     /// Re-reads the backup list only if the backups or the target changed on
     /// disk (or the target is another save), so a periodic refresh does not
     /// disturb the user.
@@ -172,6 +189,21 @@ impl BackupBrowser {
         self.selected = Some(backup.to_owned());
     }
 
+    /// Backups matched by the currently selected cleanup rule.
+    pub fn cleanup_candidates(&self, now: SystemTime) -> Vec<PathBuf> {
+        save::old_backups(&self.list, self.cleanup, now)
+    }
+
+    /// Selects every backup matched by the currently selected cleanup rule.
+    pub fn select_cleanup_candidates(&mut self, now: SystemTime) -> usize {
+        let paths = self.cleanup_candidates(now);
+        let count = paths.len();
+        self.checked = paths.into_iter().collect();
+        count
+    }
+}
+
+impl BackupBrowser {
     /// Shows the window. `current` summarises the save open in the editor
     /// when it is the target (so unsaved edits are compared), otherwise the
     /// target file on disk is used.
@@ -264,20 +296,20 @@ impl BackupBrowser {
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 let mut clicked = None;
-                for backup in &self.list {
-                    let selected = self.selected.as_ref() == Some(&backup.path);
+                for backup in &self.state.list {
+                    let selected = self.state.selected.as_ref() == Some(&backup.path);
                     let text = format!(
                         "{}   ·   {}",
                         modified_text(backup, names),
                         size_text(backup.size)
                     );
                     ui.horizontal(|ui| {
-                        let mut checked = self.checked.contains(&backup.path);
+                        let mut checked = self.state.checked.contains(&backup.path);
                         if ui.checkbox(&mut checked, "").changed() {
                             if checked {
-                                self.checked.insert(backup.path.clone());
+                                self.state.checked.insert(backup.path.clone());
                             } else {
-                                self.checked.remove(&backup.path);
+                                self.state.checked.remove(&backup.path);
                             }
                         }
                         let response = ui
@@ -286,9 +318,9 @@ impl BackupBrowser {
                         if response.clicked() {
                             // Ctrl/Cmd+click toggles the check like in file managers.
                             if ui.input(|i| i.modifiers.command)
-                                && !self.checked.remove(&backup.path)
+                                && !self.state.checked.remove(&backup.path)
                             {
-                                self.checked.insert(backup.path.clone());
+                                self.state.checked.insert(backup.path.clone());
                             }
                             clicked = Some(backup.path.clone());
                         }
@@ -382,7 +414,8 @@ impl BackupBrowser {
                 Cleanup::KeepNewest(n) => ui.add(egui::DragValue::new(n).range(0..=1000)),
                 Cleanup::OlderThanDays(d) => ui.add(egui::DragValue::new(d).range(0..=3650)),
             };
-            let old = save::old_backups(&self.list, self.cleanup, SystemTime::now());
+            let now = SystemTime::now();
+            let old = self.cleanup_candidates(now);
             if ui
                 .add_enabled(
                     !old.is_empty(),
@@ -399,7 +432,7 @@ impl BackupBrowser {
                 )
                 .clicked()
             {
-                self.checked = old.into_iter().collect();
+                self.select_cleanup_candidates(now);
             }
         });
     }
@@ -483,100 +516,6 @@ impl BackupBrowser {
     }
 }
 
-/// Table of the backup's contents next to the current save; values that
-/// differ are highlighted.
-fn comparison(ui: &mut Ui, names: Names, backup: &SaveSummary, current: Option<&SaveSummary>) {
-    let rows = summary_rows(names, backup);
-    let current_rows = current.map(|c| summary_rows(names, c));
-    egui::Grid::new("backup_comparison")
-        .striped(true)
-        .num_columns(3)
-        .spacing([16.0, 4.0])
-        .show(ui, |ui| {
-            ui.label("");
-            ui.label(RichText::new(names.text("Backup").to_string()).strong());
-            ui.label(RichText::new(names.text("Current save").to_string()).strong());
-            ui.end_row();
-            for (i, (label, value)) in rows.iter().enumerate() {
-                let other = current_rows.as_ref().and_then(|rows| rows.get(i));
-                let differs = other.is_some_and(|(_, other)| other != value);
-                ui.label(label);
-                let text = RichText::new(value);
-                ui.label(if differs {
-                    text.color(colors::ACCENT).strong()
-                } else {
-                    text
-                });
-                ui.label(other.map_or_else(|| "—".to_owned(), |(_, v)| v.clone()));
-                ui.end_row();
-            }
-        });
-}
-
-/// `(label, value)` rows describing a save.
-fn summary_rows(names: Names, summary: &SaveSummary) -> Vec<(String, String)> {
-    let unknown = || "—".to_owned();
-    let mut rows = vec![
-        (
-            names.text("Character").into_owned(),
-            summary
-                .character
-                .map_or_else(unknown, |c| names.character(c)),
-        ),
-        (
-            names.text("Layer").into_owned(),
-            summary.biome.map_or_else(unknown, |b| names.layer(b)),
-        ),
-        (
-            names.text("Run time").into_owned(),
-            summary
-                .run_time
-                .map_or_else(unknown, super::run::format_duration),
-        ),
-        (
-            names.text("Distance").into_owned(),
-            summary
-                .traveled
-                .map_or_else(unknown, |d| format!("{d} {}", names.text("m"))),
-        ),
-        (names.text("Items").into_owned(), summary.items.to_string()),
-        (
-            names.text("Blood").into_owned(),
-            summary.blood.map_or_else(unknown, |b| format!("{b:.0}%")),
-        ),
-    ];
-    for (def, level) in schema::SKILLS.iter().zip(&summary.skills) {
-        rows.push((names.skill(def), level.to_string()));
-    }
-    if summary.cheated {
-        rows.push((
-            names.text("Cheated save").into_owned(),
-            names.text("yes").into_owned(),
-        ));
-    }
-    rows
-}
-
-fn file_name(path: &Path) -> String {
-    path.file_name()
-        .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
-}
-
-fn modified_text(backup: &BackupInfo, names: Names) -> String {
-    backup.modified.map_or_else(
-        || names.text("unknown date").into_owned(),
-        |t| {
-            chrono::DateTime::<chrono::Local>::from(t)
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()
-        },
-    )
-}
-
-fn size_text(bytes: u64) -> String {
-    format!("{:.1} KB", bytes as f64 / 1024.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,7 +525,7 @@ mod tests {
     fn browser_previews_the_newest_backup_and_fits_the_screen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(save::SAVE_FILE_NAME);
-        let mut data = save::new_game_data();
+        let mut data = serde_json::json!({"body": {}, "limbs": [], "items": [], "biome": 0});
         std::fs::write(&path, save::encode(&data, save::SaveFormat::Gzip)).unwrap();
         save::create_backup(&path).unwrap();
         data["biome"] = 3.into();

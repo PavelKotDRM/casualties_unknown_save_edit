@@ -1,17 +1,12 @@
 //! Inventory tab: items grouped by location (held slot / worn slot) with the
 //! container contents, an item details editor and an "add item" catalogue.
 
-// FIXME: ~790 lines; the holder/placement rules (`HolderRules`, `holder_rules`,
-// `missing_wear_limb`, `default_location`, `location_choices`, `holder_location_allowed`,
-// `item_wear_slot`, `is_hand_slot`) are pure save-document logic but live in the UI module and
-// are re-imported by `add.rs`/`details.rs` through `super::*`. Move them into
-// `model::inventory` (or a new `model/placement.rs`) with their tests, and move `location_name`/
-// `location_icon`/`location_combo` into a small `ui/inventory/location.rs`. `show` (~120 lines)
-// and `item_list` (~130 lines) should be split so the per-group header, the nested container
-// rows and the drag/reorder handling are separate functions.
-
 mod add;
 mod details;
+mod list;
+mod location;
+pub use location::location_name;
+use location::{location_combo, location_icon};
 
 use std::collections::HashMap;
 
@@ -23,6 +18,11 @@ use crate::catalog;
 use crate::game_data::ItemStats;
 use crate::json::{self, get_bool};
 use crate::model::{self, Location};
+
+pub use crate::model::placement::{
+    HolderRules, default_location, holder_location_allowed, holder_rules, is_hand_slot,
+    item_wear_slot, location_choices, missing_wear_limb,
+};
 
 /// UI state of the inventory tab.
 #[derive(Default)]
@@ -39,6 +39,11 @@ pub struct InventoryState {
     pub add_id: String,
     /// Target location of new items.
     pub add_location: Option<Location>,
+    /// Most recent failure to construct or add an item.
+    pub add_error: Option<String>,
+    balance_rule: model::BalanceRule,
+    move_favourites: bool,
+    balance_result: Option<Result<usize, String>>,
 }
 
 /// Action requested by an item row.
@@ -57,18 +62,6 @@ struct ItemRowState {
     selected: bool,
     first: bool,
     last: bool,
-}
-
-/// Human-readable name of a location.
-pub fn location_name(loc: &Location, names: Names) -> String {
-    let language = names.interface_language;
-    match loc {
-        Location::Slot(s) => names.hold_slot(*s),
-        Location::Worn(w) if w.is_empty() => language
-            .text("Unassigned (slot -1, no wear slot)")
-            .into_owned(),
-        Location::Worn(w) => format!("{}: {w}", language.text("Worn")),
-    }
 }
 
 fn group_location_name(group: &model::ItemGroup, items: &[Value], names: Names) -> String {
@@ -93,166 +86,9 @@ fn group_location_name(group: &model::ItemGroup, items: &[Value], names: Names) 
     name.map_or(location.clone(), |name| format!("{location} · {name}"))
 }
 
-fn location_icon(loc: &Location) -> &'static str {
-    match loc {
-        Location::Slot(s) => usize::try_from(*s)
-            .ok()
-            .and_then(|i| crate::schema::HOLD_SLOTS.get(i))
-            .map_or("❓", |def| def.icon),
-        Location::Worn(_) => "👕",
-    }
-}
-
 /// Short name of a component type (`WaterContainerItem, Assembly-CSharp…`).
 pub fn component_short_name(full: &str) -> &str {
     full.split(',').next().unwrap_or(full).trim()
-}
-
-fn item_wear_slot<'a>(id: &str, stats: &'a HashMap<String, ItemStats>) -> Option<&'a str> {
-    if let Some(item) = stats.get(id) {
-        return item.wearable.then_some(item.wear_slot.as_deref()).flatten();
-    }
-    catalog::item(id)
-        .filter(|item| !item.wear_slot.is_empty())
-        .map(|item| item.wear_slot)
-}
-
-/// What an item needs to become the holder of an empty location.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct HolderRules<'a> {
-    /// Wear slot the item can be worn in.
-    wear_slot: Option<&'a str>,
-    /// The game only lets the item occupy a hand slot.
-    hands_only: bool,
-    /// Clothing that can only be worn or stored, never held in a body slot.
-    not_holdable: bool,
-    /// Limb object the item is worn on; it cannot be worn while that limb is missing.
-    wear_limb: Option<&'a str>,
-}
-
-fn holder_rules<'a>(id: &str, stats: &'a HashMap<String, ItemStats>) -> HolderRules<'a> {
-    HolderRules {
-        wear_slot: item_wear_slot(id, stats),
-        hands_only: stats.get(id).is_some_and(|item| item.only_hold_in_hands),
-        not_holdable: match stats.get(id) {
-            Some(item) => item.wearable && !item.wearable_can_be_held,
-            None => item_wear_slot(id, stats).is_some(),
-        },
-        wear_limb: stats
-            .get(id)
-            .and_then(|item| item.desired_wear_limb.as_deref()),
-    }
-}
-
-/// Index of the limb a wearable goes on when that limb is dismembered.
-fn missing_wear_limb(data: &Value, holder: HolderRules) -> Option<usize> {
-    let index = crate::schema::LIMBS
-        .iter()
-        .position(|limb| Some(limb.object) == holder.wear_limb)?;
-    data.get("limbs")
-        .and_then(|limbs| limbs.get(index))
-        .and_then(|limb| limb.get("dismembered"))
-        .and_then(Value::as_bool)
-        .filter(|missing| *missing)
-        .map(|_| index)
-}
-
-/// Where a new or reset item should go by default: a hand, or its wear slot
-/// for clothing that cannot be held.
-fn default_location(holder: HolderRules) -> Location {
-    match holder.wear_slot {
-        Some(slot) if holder.not_holdable => Location::Worn(slot.to_owned()),
-        _ => Location::Slot(0),
-    }
-}
-
-fn is_hand_slot(slot: i64) -> bool {
-    matches!(slot, 0 | 1)
-}
-
-/// Locations offered in choosers, with only compatible wear slots.
-fn location_choices(
-    data: &Value,
-    holder: HolderRules,
-    current: &Location,
-    preserve_current: bool,
-) -> Vec<Location> {
-    let mut out: Vec<Location> = model::group_items(data)
-        .into_iter()
-        .map(|g| g.location)
-        .filter(|location| holder_location_allowed(data, location, holder))
-        .collect();
-    for s in 0..crate::schema::HOLD_SLOTS.len() as i64 {
-        let l = Location::Slot(s);
-        if !out.contains(&l) {
-            out.push(l);
-        }
-    }
-    if let Some(slot) = holder.wear_slot {
-        let l = Location::Worn(slot.to_owned());
-        if !out.contains(&l) {
-            out.push(l);
-        }
-    }
-    if preserve_current && !out.contains(current) {
-        out.push(current.clone());
-    }
-    out
-}
-
-/// Whether a location may be targeted: an occupied location stores the item
-/// inside its holder, while an empty one requires the item to be holdable
-/// there (a matching wear slot on a limb that is not dismembered, a hand for
-/// hands-only items, and never a body slot for clothing).
-fn holder_location_allowed(data: &Value, location: &Location, holder: HolderRules) -> bool {
-    let occupied = || {
-        model::group_items(data)
-            .iter()
-            .any(|group| &group.location == location)
-    };
-    match location {
-        Location::Slot(slot) => {
-            (!holder.not_holdable && (!holder.hands_only || is_hand_slot(*slot))) || occupied()
-        }
-        Location::Worn(slot) => {
-            (holder.wear_slot == Some(slot.as_str()) && missing_wear_limb(data, holder).is_none())
-                || (!slot.is_empty() && occupied())
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)] // independent pieces of UI state
-fn location_combo(
-    ui: &mut Ui,
-    id: &str,
-    data: &Value,
-    current: &mut Location,
-    holder: HolderRules,
-    preserve_current: bool,
-    names: Names,
-    stats: &HashMap<String, ItemStats>,
-    item_index: usize,
-) -> bool {
-    let before = current.clone();
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(location_name(current, names))
-        .width(240.0)
-        .height(400.0)
-        .show_ui(ui, |ui| {
-            for loc in location_choices(data, holder, current, preserve_current) {
-                let (description, color, can_move) =
-                    add::destination_status_for_move(data, &loc, item_index, stats, names);
-                let text = format!(
-                    "{} {} · {description}",
-                    location_icon(&loc),
-                    location_name(&loc, names)
-                );
-                ui.add_enabled_ui(can_move, |ui| {
-                    ui.selectable_value(current, loc, RichText::new(text).color(color));
-                });
-            }
-        });
-    *current != before
 }
 
 fn items(data: &Value) -> &[Value] {
@@ -297,6 +133,42 @@ pub fn show(
                 .text("The first item of a location is held / worn; the following ones are stored inside it.")
         ));
     });
+    ui.horizontal_wrapped(|ui| {
+        egui::ComboBox::from_id_salt("balance_rule")
+            .selected_text(names.text(state.balance_rule.label()).into_owned())
+            .show_ui(ui, |ui| {
+                for rule in model::BalanceRule::ALL {
+                    ui.selectable_value(&mut state.balance_rule, rule, names.text(rule.label()).into_owned());
+                }
+            });
+        ui.checkbox(&mut state.move_favourites, names.text("Move favourites").into_owned());
+        if ui.button(names.text("Balance containers").into_owned())
+            .on_hover_text(names.text("Equipped items and compatible contents of specialized containers stay in place. Redistribute the remaining items only. If an optimum cannot be proven within the search limit, nothing is changed.").into_owned())
+            .clicked()
+        {
+            let result = model::balance_containers(data, stats, state.balance_rule, !state.move_favourites);
+            if result.as_ref().is_ok_and(|&moved| moved > 0) {
+                state.selected = None;
+                changed = true;
+            }
+            state.balance_result = Some(result);
+        }
+    });
+    if let Some(result) = &state.balance_result {
+        match result {
+            Ok(moved) => {
+                ui.colored_label(
+                    colors::GOOD,
+                    names
+                        .text("{count} items moved")
+                        .replace("{count}", &moved.to_string()),
+                );
+            }
+            Err(error) => {
+                ui.colored_label(colors::BAD, names.text(error).into_owned());
+            }
+        }
+    }
     ui.horizontal_wrapped(|ui| {
         if let Some(load) = model::carry_load(data, stats) {
             let color = if load.complete && load.weight > load.capacity {
@@ -352,7 +224,7 @@ pub fn show(
                 .id_salt("inv_list")
                 .auto_shrink(false)
                 .show(ui, |ui| {
-                    action = item_list(ui, data, names, stats, state.selected);
+                    action = list::item_list(ui, data, names, stats, state.selected);
                 });
         });
         ui.separator();
@@ -417,231 +289,6 @@ fn apply_action(data: &mut Value, state: &mut InventoryState, action: RowAction)
     }
 }
 
-fn item_list(
-    ui: &mut Ui,
-    data: &Value,
-    names: Names,
-    stats: &HashMap<String, ItemStats>,
-    selected: Option<usize>,
-) -> Option<RowAction> {
-    let mut action = None;
-    let all = items(data);
-    for group in model::group_items(data) {
-        card(ui, |ui| {
-            ui.set_width(ui.available_width());
-            let header = ui.label(
-                RichText::new(format!(
-                    "{}  {}",
-                    location_icon(&group.location),
-                    group_location_name(&group, all, names)
-                ))
-                .strong()
-                .color(colors::ACCENT),
-            );
-            if matches!(&group.location, Location::Slot(_)) {
-                header.on_hover_text(
-                    names
-                        .text("The first item in this slot is its holder; any following items are stored inside it.")
-                        .to_string(),
-                );
-            }
-            for (pos, &i) in group.indices.iter().enumerate() {
-                let first = pos == 0;
-                let last = pos + 1 == group.indices.len();
-                ui.horizontal(|ui| {
-                    if !first {
-                        ui.add_space(22.0);
-                        ui.weak("↳");
-                    }
-                    if let Some(a) = item_row(
-                        ui,
-                        &all[i],
-                        names,
-                        ItemRowState {
-                            index: i,
-                            weights: model::item_weights(data, i, stats),
-                            selected: selected == Some(i),
-                            first,
-                            last,
-                        },
-                    ) {
-                        action = Some(a);
-                    }
-                });
-                if first
-                    && let Some(id) = all[i].get("id").and_then(Value::as_str)
-                    && stats
-                        .get(id)
-                        .is_some_and(|item_stats| item_stats.container_capacity.is_some())
-                {
-                    if let Some(space) = model::container_space(data, i, stats) {
-                        ui.horizontal(|ui| {
-                            ui.add_space(22.0);
-                            let (label, color) = if !space.complete {
-                                (
-                                    names.text("Container capacity unavailable").to_string(),
-                                    colors::WARN,
-                                )
-                            } else if space.over_capacity > 0.0 {
-                                (
-                                    names.text("Over capacity by {weight} u").replace(
-                                        "{weight}",
-                                        &format!("{:.2}", space.over_capacity),
-                                    ),
-                                    colors::BAD,
-                                )
-                            } else if space.remaining <= f32::EPSILON {
-                                (names.text("Full").to_string(), colors::BAD)
-                            } else {
-                                (
-                                    names
-                                        .text("Space left: {weight} u")
-                                        .replace("{weight}", &format!("{:.2}", space.remaining)),
-                                    colors::ACCENT,
-                                )
-                            };
-                            ui.colored_label(color, label);
-                            if space.complete {
-                                let fill = if space.capacity > 0.0 {
-                                    (space.used / space.capacity).clamp(0.0, 1.0)
-                                } else {
-                                    1.0
-                                };
-                                ui.add(
-                                    ProgressBar::new(fill)
-                                        .desired_width(120.0)
-                                        .show_percentage()
-                                        .fill(color),
-                                );
-                            }
-                        });
-                    } else {
-                        ui.horizontal(|ui| {
-                            ui.add_space(22.0);
-                            ui.colored_label(
-                                colors::WARN,
-                                names.text("Container capacity unavailable").to_string(),
-                            );
-                        });
-                    }
-                }
-                if first && group.indices.len() > 1 {
-                    ui.horizontal(|ui| {
-                        ui.add_space(22.0);
-                        ui.weak(format!(
-                            "{} {} {}",
-                            names.text("contains"),
-                            group.indices.len() - 1,
-                            names.text("item(s):")
-                        ));
-                    });
-                }
-            }
-        });
-        ui.add_space(4.0);
-    }
-    if all.is_empty() {
-        ui.weak(names.text("The inventory is empty.").to_string());
-    }
-    action
-}
-
-fn item_row(ui: &mut Ui, item: &Value, names: Names, row: ItemRowState) -> Option<RowAction> {
-    let mut action = None;
-    let id = item.get("id").and_then(Value::as_str).unwrap_or("");
-    let def = catalog::item(id);
-    let icon = def.map_or("❓", |d| category_icon(d.category));
-    let mut text = RichText::new(format!("{icon} {}", names.item(id)));
-    if def.is_none() {
-        text = text.color(colors::WARN);
-    }
-    let r = ui.selectable_label(row.selected, text);
-    if r.clicked() {
-        action = Some(RowAction::Select(row.index));
-    }
-    if let Some(weight) = row.weights.game {
-        ui.weak(format!("{weight:.2} u"))
-            .on_hover_text(names.text("Game item weight").to_string());
-    }
-    r.on_hover_ui(|ui| {
-        ui.strong(names.item(id));
-        ui.weak(format!("id: {id} · items[{}]", row.index));
-        if let Some(d) = names.item_description(id) {
-            ui.label(d);
-        }
-        if def.is_none() {
-            ui.colored_label(
-                colors::WARN,
-                names
-                    .text("Unknown id — not in the game's item list.")
-                    .to_string(),
-            );
-        }
-    });
-    // Align the condition bars in one column, regardless of indent and name length.
-    let bar_x = ui.max_rect().left() + 250.0;
-    let pad = bar_x - ui.cursor().left();
-    if pad > 0.0 {
-        ui.add_space(pad);
-    }
-    let cond = item.get("condition").and_then(Value::as_f64).unwrap_or(1.0) as f32;
-    ui.add(
-        ProgressBar::new(cond)
-            .desired_width(60.0)
-            .desired_height(10.0)
-            .fill(quality_color(cond))
-            .text(RichText::new(format!("{:.0}%", cond * 100.0)).small()),
-    )
-    .on_hover_text(names.text("Condition").to_string());
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if ui
-            .small_button("🗑")
-            .on_hover_text(names.text("Delete").to_string())
-            .clicked()
-        {
-            action = Some(RowAction::Delete(row.index));
-        }
-        if ui
-            .small_button("⧉")
-            .on_hover_text(names.text("Duplicate").to_string())
-            .clicked()
-        {
-            action = Some(RowAction::Duplicate(row.index));
-        }
-        if ui
-            .add_enabled(!row.last, egui::Button::new("⏷").small())
-            .on_hover_text(names.text("Move down").to_string())
-            .clicked()
-        {
-            action = Some(RowAction::Down(row.index));
-        }
-        if ui
-            .add_enabled(!row.first, egui::Button::new("⏶").small())
-            .on_hover_text(names.text("Move up").to_string())
-            .clicked()
-        {
-            action = Some(RowAction::Up(row.index));
-        }
-        let fav = item
-            .get("favourited")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let star = if fav {
-            RichText::new("★").color(colors::ACCENT)
-        } else {
-            RichText::new("☆")
-        };
-        if ui
-            .small_button(star)
-            .on_hover_text(names.text("Favourite").to_string())
-            .clicked()
-        {
-            action = Some(RowAction::ToggleFavourite(row.index));
-        }
-    });
-    action
-}
-
 fn row_label(ui: &mut Ui, names: Names, text: &str) {
     ui.add_sized(
         [120.0, ui.spacing().interact_size.y],
@@ -655,6 +302,28 @@ mod tests {
     use crate::ui::InterfaceLanguage;
     use serde_json::json;
 
+    fn hold_slot_metadata() -> crate::game_data::metadata::Metadata {
+        let names = [
+            "Right hand",
+            "Left hand",
+            "Mouth",
+            "Upper back",
+            "Lower back",
+            "Belt",
+        ];
+        crate::game_data::metadata::Metadata {
+            hold_slots: names
+                .into_iter()
+                .map(|name| crate::schema::HoldSlotDef {
+                    name,
+                    locale_key: "",
+                    icon: "",
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn component_names_are_shortened() {
         assert_eq!(component_short_name(details::WATER), "WaterContainerItem");
@@ -663,6 +332,7 @@ mod tests {
 
     #[test]
     fn slot_group_name_identifies_its_holder_item() {
+        let _metadata = crate::game_data::runtime::scoped_for_test(hold_slot_metadata());
         let data = json!({
             "items": [
                 {"id": "bigpack", "slot": 3},
@@ -712,6 +382,7 @@ mod tests {
 
     #[test]
     fn location_choices_offer_only_real_hold_slots() {
+        let _metadata = crate::game_data::runtime::scoped_for_test(hold_slot_metadata());
         let choices = location_choices(
             &json!({"items": []}),
             HolderRules::default(),
@@ -767,6 +438,16 @@ mod tests {
 
     #[test]
     fn synced_nonwearable_stats_override_catalogue_wear_slots() {
+        let _metadata =
+            crate::game_data::runtime::scoped_for_test(crate::game_data::metadata::Metadata {
+                items: vec![catalog::ItemDef {
+                    id: "fixture_cap",
+                    category: "wearable",
+                    wear_slot: "head",
+                    capacity: 0.0,
+                }],
+                ..Default::default()
+            });
         let item = catalog::ITEMS
             .iter()
             .find(|item| !item.wear_slot.is_empty())
@@ -831,7 +512,7 @@ mod tests {
             locale: None,
             interface_language: InterfaceLanguage::English,
         };
-        assert!(add::do_add(&mut data, &mut state, &stats, names));
+        assert!(add::do_add_fixture(&mut data, &mut state, &stats, names));
         assert_eq!(data["items"][0]["slot"], -1);
         assert_eq!(data["items"][0]["wearSlot"], "head");
     }

@@ -5,6 +5,115 @@ use std::path::Path;
 use cu_save_editor::game_info::GameInfo;
 use cu_save_editor::schema;
 
+#[test]
+fn runtime_catalogues_and_rules_come_from_the_installed_game() {
+    let Some(game_dir) = std::env::var_os("CU_GAME_DIR") else {
+        eprintln!("skipped: CU_GAME_DIR is not set");
+        return;
+    };
+    let data = cu_save_editor::game_data::load_game_data(Path::new(&game_dir)).unwrap();
+    let metadata = &data.metadata;
+    let ammunition = metadata.ammunition.as_ref().unwrap_or_else(|| {
+        panic!(
+            "ammunition metadata unavailable: {:?}",
+            metadata.ammunition_error
+        )
+    });
+    assert!(!ammunition.items["9mmround"].magazine);
+    assert!(ammunition.items["smallmagazine"].magazine);
+    assert!(ammunition.items["smallmagazine"].insertable);
+    assert!(!ammunition.items["boxof12gauge"].insertable);
+    assert_eq!(ammunition.items["boxof12gauge"].defaults["rounds"], 0);
+    assert_eq!(ammunition.items["boxof12gauge"].defaults["maxRounds"], 16);
+    assert_eq!(ammunition.items["smallmagazine"].defaults["maxRounds"], 17);
+    assert_eq!(ammunition.guns["pistol"].defaults["magCapacity"], 17);
+    assert_eq!(
+        ammunition.guns["pistol"].defaults["roundInChamber"],
+        ammunition.chamber.empty
+    );
+    assert_eq!(metadata.items.len(), data.items.len());
+    assert_eq!(metadata.liquids.len(), data.effects.liquids.len());
+    assert!(!metadata.characters.is_empty());
+    assert!(!metadata.limbs.is_empty());
+    assert!(!metadata.hold_slots.is_empty());
+    assert!(!metadata.endings.is_empty());
+    assert!(
+        metadata
+            .endings
+            .iter()
+            .all(|ending| !ending.status_key.is_empty())
+    );
+    assert!(metadata.items.iter().all(|item| {
+        let stats = &data.items[item.id];
+        item.category == stats.category && item.capacity == stats.liquid_capacity.unwrap_or(0.0)
+    }));
+    assert!(!metadata.body_defaults.is_empty());
+    assert!(!metadata.limb_defaults.is_empty());
+    for key in ["condition", "favourited", "label", "swatch"] {
+        assert!(
+            metadata.item_defaults.contains_key(key),
+            "missing saved-item default {key}"
+        );
+    }
+    assert!(
+        metadata.mood_history_length.is_some(),
+        "missing mood array initializer"
+    );
+    assert!(
+        metadata.character_identity.is_some(),
+        "missing character identity generator"
+    );
+    let experience = metadata.experience.as_ref().expect("missing XP curve");
+    assert_eq!(experience.evaluate(0), Some(0));
+    assert_eq!(experience.evaluate(13), Some(1062));
+    assert_eq!(experience.evaluate(14), Some(1255));
+    assert_eq!(experience.evaluate(15), Some(1484));
+
+    let mut fields = std::collections::HashMap::from([
+        ("weightOffset".into(), 0.0),
+        ("sicknessAmount".into(), 0.0),
+        ("hunger".into(), 100.0),
+        ("thirst".into(), 100.0),
+        ("skills.STR".into(), 10.0),
+        ("skills.RES".into(), 10.0),
+        ("encumbrancecap".into(), 1.0),
+    ]);
+    let capacity = metadata
+        .carry_capacity
+        .as_ref()
+        .expect("missing carry expression");
+    assert_eq!(capacity.evaluate_fields(None, &fields), Some(11.0));
+    fields.insert("hunger".into(), 101.0);
+    assert_eq!(capacity.evaluate_fields(None, &fields), Some(12.5));
+    fields.insert("hunger".into(), 39.0);
+    fields.insert("thirst".into(), 39.0);
+    assert_eq!(capacity.evaluate_fields(None, &fields), Some(8.5));
+    fields.remove("skills.RES");
+    assert_eq!(capacity.evaluate_fields(None, &fields), None);
+
+    for preset in schema::RUN_PRESETS {
+        assert_eq!(
+            schema::run_settings_for_preset(preset.id).unwrap().len(),
+            metadata.run_settings.len(),
+        );
+    }
+    let save = cu_save_editor::save::try_new_game_data().unwrap();
+    cu_save_editor::save::validate(&save).unwrap();
+    assert_eq!(
+        save["limbs"].as_array().unwrap().len(),
+        metadata.limbs.len()
+    );
+    assert_eq!(
+        save["body"]["skills"][metadata.skills[0].key],
+        metadata.characters[0].base_skills[0]
+    );
+    assert_eq!(save["items"], serde_json::json!([]));
+    assert_eq!(
+        save["lastHappiness"].as_array().unwrap().len(),
+        metadata.mood_history_length.unwrap()
+    );
+}
+
 /// Detects game updates that rename or remove the progression keys the
 /// editor relies on: every key must still be a string literal in the game.
 #[test]
@@ -78,6 +187,7 @@ fn item_and_container_metadata_is_loaded() {
     }
     assert!(lerp_found, "game item weight no longer calls Lerp");
     let bag = stats.get("bigpack").expect("missing container bigpack");
+    assert_eq!(bag.container_capacity, Some(7.5_f32 + 0.001));
     assert!(bag.container_capacity.is_some_and(|value| value > 0.0));
     assert!(
         bag.container_max_item_weight

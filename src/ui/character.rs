@@ -149,8 +149,13 @@ pub fn unlocks_card(ui: &mut Ui, names: Names, unlocks: &mut GameProgress) {
 }
 
 /// Endings the player has reached, read from (and editable in) the game's
-/// preferences. Names and how to reach an ending stay hidden until then.
-pub fn endings_card(ui: &mut Ui, names: Names, progress: &mut GameProgress) {
+/// preferences. Undiscovered details require explicit, staged spoiler consent.
+pub fn endings_card(
+    ui: &mut Ui,
+    names: Names,
+    progress: &mut GameProgress,
+    spoilers: &mut super::spoilers::SpoilerUi<'_>,
+) {
     card(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -158,22 +163,30 @@ pub fn endings_card(ui: &mut Ui, names: Names, progress: &mut GameProgress) {
             if let Some(found) = progress.discovered_endings() {
                 ui.weak(
                     names
-                        .text("{found} of {total} discovered")
-                        .replace("{found}", &found.to_string())
-                        .replace("{total}", &schema::ENDINGS.len().to_string()),
+                        .text("{found} discovered")
+                        .replace("{found}", &found.to_string()),
                 );
             }
         });
+        ui.horizontal_wrapped(|ui| super::spoilers::ending_total(ui, names, spoilers.state));
         if let Some(error) = &progress.error {
             ui.colored_label(
                 colors::WARN,
                 format!("{} {error}", names.text("Could not read the unlocks:")),
             );
-            return;
         }
         for i in 0..schema::ENDINGS.len() {
+            if !spoilers.state.ending_visible(i, progress) {
+                continue;
+            }
             let mut discovered = progress.is_ending_discovered(i);
-            let response = ui.checkbox(&mut discovered, names.ending_if_discovered(i, progress));
+            let response = ui.add_enabled(
+                progress.is_known(),
+                egui::Checkbox::new(
+                    &mut discovered,
+                    spoilers.hints.title(i, names, progress, spoilers.state),
+                ),
+            );
             let response = if discovered {
                 response.on_hover_text(names.text(schema::ENDINGS[i].how).to_string())
             } else {
@@ -182,7 +195,16 @@ pub fn endings_card(ui: &mut Ui, names: Names, progress: &mut GameProgress) {
             if response.changed() {
                 progress.write_error = progress.set_ending_discovered(i, discovered).err();
             }
+            if !discovered {
+                ui.push_id(("ending_hints", i), |ui| {
+                    for hint in spoilers.hints.visible(i, spoilers.state) {
+                        ui.label(format!("{}: {}", names.text(hint.label), hint.text));
+                    }
+                    super::spoilers::hint_button(ui, names, i, spoilers.state, &spoilers.hints);
+                });
+            }
         }
+        super::spoilers::next_ending(ui, names, progress, spoilers.state, &spoilers.hints);
         ui.weak(
             names
                 .text("The game marks an ending again on start if you have its Steam achievement.")
@@ -192,10 +214,16 @@ pub fn endings_card(ui: &mut Ui, names: Names, progress: &mut GameProgress) {
 }
 
 /// Shows the character tab. Returns `true` if the document changed.
-pub fn show(ui: &mut Ui, data: &mut Value, names: Names, unlocks: &mut GameProgress) -> bool {
+pub fn show(
+    ui: &mut Ui,
+    data: &mut Value,
+    names: Names,
+    unlocks: &mut GameProgress,
+    spoilers: &mut super::spoilers::SpoilerUi<'_>,
+) -> bool {
     egui::ScrollArea::vertical()
         .auto_shrink(false)
-        .show(ui, |ui| contents(ui, data, names, unlocks, false))
+        .show(ui, |ui| contents(ui, data, names, unlocks, false, spoilers))
         .inner
 }
 
@@ -208,11 +236,13 @@ pub fn contents(
     names: Names,
     unlocks: &mut GameProgress,
     new_save: bool,
+    spoilers: &mut super::spoilers::SpoilerUi<'_>,
 ) -> bool {
     let mut changed = false;
     let Some(root) = data.as_object_mut() else {
         return false;
     };
+    let original_character = root.get("character").cloned();
     section_heading(ui, names, "🐾", "Identity");
     let mut selected = None;
     card(ui, |ui| {
@@ -227,6 +257,7 @@ pub fn contents(
             selected = character_combo(ui, root, names, unlocks);
             let current = get_i64(root, "character").and_then(|c| usize::try_from(c).ok());
             if let Some(c) = current
+                && unlocks.is_known()
                 && !unlocks.is_unlocked(c)
             {
                 ui.colored_label(colors::WARN, format!("🔒 {}", names.text("Locked in the game")))
@@ -248,8 +279,11 @@ pub fn contents(
                     .and_then(|b| b.get_mut("skills"))
                     .and_then(Value::as_object_mut)
             {
-                model::setup_character_skills(skills, c);
-                changed = true;
+                let mut updated = skills.clone();
+                if super::operation_result(ui, model::setup_character_skills(&mut updated, c)) {
+                    *skills = updated;
+                    changed = true;
+                }
             }
         });
         if let Some(c) = get_i64(root, "character").and_then(|c| usize::try_from(c).ok()) {
@@ -265,19 +299,29 @@ pub fn contents(
         }
     });
     if let Some(character) = selected {
-        changed = true;
+        let mut accepted = true;
         if new_save
             && let Some(skills) = root
                 .get_mut("body")
                 .and_then(|b| b.get_mut("skills"))
                 .and_then(Value::as_object_mut)
         {
-            model::setup_character_skills(skills, character);
+            let mut updated = skills.clone();
+            accepted =
+                super::operation_result(ui, model::setup_character_skills(&mut updated, character));
+            if accepted {
+                *skills = updated;
+            }
+        }
+        if accepted {
+            changed = true;
+        } else if let Some(original) = original_character {
+            root.insert("character".to_owned(), original);
         }
     }
     unlocks_card(ui, names, unlocks);
     if !new_save {
-        endings_card(ui, names, unlocks);
+        endings_card(ui, names, unlocks, spoilers);
     }
 
     section_heading(ui, names, "💪", "Skills");
@@ -322,6 +366,22 @@ pub fn contents(
     changed
 }
 
+fn set_skill_level(skills: &mut Map<String, Value>, key: &str, level: i64) -> Result<(), String> {
+    let level = i32::try_from(level)
+        .ok()
+        .filter(|level| *level >= 0)
+        .ok_or_else(|| "Skill level is outside the game's integer range".to_owned())?;
+    let next = level
+        .checked_add(1)
+        .ok_or_else(|| "The next skill level exceeds the game's integer range".to_owned())?;
+    if schema::try_experience_for_level(level).is_none()
+        || schema::try_experience_for_level(next).is_none()
+    {
+        return Err("Skill experience bounds are unavailable for this level".to_owned());
+    }
+    model::set_skill_level(skills, key, i64::from(level))
+}
+
 fn skill_row(
     ui: &mut Ui,
     skills: &mut Map<String, Value>,
@@ -342,19 +402,17 @@ fn skill_row(
         if ui
             .add(
                 egui::DragValue::new(&mut new_level)
-                    // FIXME: The character editor hard-codes the game's skill-level range [0, 99].
-                    .range(0..=99)
+                    .range(0..=i64::from(i32::MAX - 1))
                     .speed(0.1),
             )
             .changed()
         {
-            model::set_skill_level(skills, key, new_level);
-            changed = true;
+            changed |= super::operation_result(ui, set_skill_level(skills, key, new_level));
         }
         for (txt, delta) in [("−", -1), ("+", 1)] {
             if ui.small_button(txt).clicked() {
-                model::set_skill_level(skills, key, (level + delta).max(0));
-                changed = true;
+                let new_level = level.saturating_add(delta).max(0);
+                changed |= super::operation_result(ui, set_skill_level(skills, key, new_level));
             }
         }
         let min = get_f64(skills, &format!("min{key}")).unwrap_or(0.0);
@@ -376,7 +434,7 @@ fn skill_row(
                 .text("Level {level}: {min} XP, level {next}: {max} XP")
                 .replace("{level}", &level.to_string())
                 .replace("{min}", &format!("{min:.0}"))
-                .replace("{next}", &(level + 1).to_string())
+                .replace("{next}", &level.saturating_add(1).to_string())
                 .replace("{max}", &format!("{max:.0}")),
         );
     });
@@ -412,4 +470,34 @@ fn skill_row(
         }
     });
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skill_level_rejects_negative_and_unrepresentable_next_levels() {
+        let mut skills = Map::new();
+        assert!(set_skill_level(&mut skills, "STR", -1).is_err());
+        assert!(set_skill_level(&mut skills, "STR", i64::from(i32::MAX)).is_err());
+        assert!(set_skill_level(&mut skills, "STR", i64::MAX).is_err());
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn skill_level_above_99_uses_the_installed_curve() {
+        let _metadata =
+            crate::game_data::runtime::scoped_for_test(crate::game_data::metadata::Metadata {
+                experience: Some(crate::game_data::program::ScalarProgram::test_linear(
+                    None, 100.0, 0.0,
+                )),
+                ..Default::default()
+            });
+        let mut skills = Map::new();
+        set_skill_level(&mut skills, "STR", 120).unwrap();
+        assert_eq!(skills["STR"], 120);
+        assert_eq!(skills["minSTR"], 12000);
+        assert_eq!(skills["maxSTR"], 12100);
+    }
 }

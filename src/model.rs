@@ -5,639 +5,85 @@
 //! skill levels and their experience boundaries. They are UI-independent and
 //! unit tested.
 
-// FIXME: ~850 lines covering four unrelated domains: inventory weights/capacity (`item_weights`,
-// `physical_load`, `container_space`, `carry_load`), inventory structure (`Location`, `ItemGroup`,
-// `group_items`, `new_item`/`add_item`/`remove_item`/`duplicate_item`/`move_*`), body healing
-// (`heal_limbs`, `heal_limb`, `restore_vitals`, `fill_needs`) and skills (`set_skill_level`,
-// `setup_character_skills`, `skill_progress`). Split into `model/{inventory.rs, load.rs,
-// health.rs, skills.rs}` with `model.rs` re-exporting, and move the per-function tests along
-// with them. `carry_load` (~80 lines) should be broken into named steps (base capacity, weight
-// offset, sickness, hunger/thirst, skills) so the hard-coded formula is readable and testable.
+mod ammunition;
+mod balance;
+mod health;
+mod inventory;
+mod load;
+pub mod placement;
+mod skills;
 
-use std::collections::HashMap;
-
-use serde_json::{Map, Value, json};
-
-use crate::game_data::ItemStats;
-use crate::json::{get_f64, get_i64, set_bool, set_f64, set_i64};
-use crate::schema;
-
-/// Where an item is located in the inventory.
-///
-/// Within one location the first item is the one held / worn; following
-/// items are stored *inside* it (it must be a container). This mirrors how
-/// `SaveSystem.TryLoadGame` restores items.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Location {
-    /// Inventory (hand / hotbar) slot index (`slot >= 0`).
-    Slot(i64),
-    /// Wear slot id (`slot == -1`, `wearSlot == id`).
-    Worn(String),
-}
-
-impl Location {
-    /// Location of a single item object.
-    pub fn of(item: &Value) -> Location {
-        let slot = item.get("slot").and_then(Value::as_i64).unwrap_or(-1);
-        if slot >= 0 {
-            Location::Slot(slot)
-        } else {
-            Location::Worn(
-                item.get("wearSlot")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-            )
-        }
-    }
-
-    /// Writes this location into an item object.
-    pub fn apply(&self, item: &mut Value) {
-        let Some(obj) = item.as_object_mut() else {
-            return;
-        };
-        match self {
-            Location::Slot(s) => {
-                obj.insert("slot".into(), json!(s));
-                obj.insert("wearSlot".into(), Value::Null);
-            }
-            Location::Worn(w) => {
-                obj.insert("slot".into(), json!(-1));
-                obj.insert("wearSlot".into(), json!(w));
-            }
-        }
-    }
-}
-
-/// Items sharing one [`Location`].
-#[derive(Debug, Clone, PartialEq)]
-pub struct ItemGroup {
-    /// Location of the group.
-    pub location: Location,
-    /// Indices into `items`; the first is the holder / worn item.
-    pub indices: Vec<usize>,
-}
-
-/// Computed carrying load and capacity in game units (`u`), with incomplete metadata flagged.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CarryLoad {
-    pub weight: f32,
-    pub capacity: f32,
-    pub complete: bool,
-}
-
-/// Game-unit and estimated physical weights for one item. Physical weight is not a game stat.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ItemWeights {
-    pub game: Option<f32>,
-    pub game_complete: bool,
-    pub physical: Option<f32>,
-    pub liquid: Option<f32>,
-}
-
-/// Estimated total physical weight, without the game's container modifiers.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PhysicalLoad {
-    pub weight: f32,
-    pub complete: bool,
-}
-
-/// Remaining container capacity in game units (`u`).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ContainerSpace {
-    pub capacity: f32,
-    pub used: f32,
-    pub remaining: f32,
-    pub over_capacity: f32,
-    pub complete: bool,
-}
-
-/// Compute game and estimated physical weights from the item and its saved components.
-pub fn item_weights(data: &Value, index: usize, stats: &HashMap<String, ItemStats>) -> ItemWeights {
-    let unknown = ItemWeights {
-        game: None,
-        game_complete: false,
-        physical: None,
-        liquid: None,
-    };
-    let Some(item) = items(data).get(index) else {
-        return unknown;
-    };
-    let Some(item_stats) = item
-        .get("id")
-        .and_then(Value::as_str)
-        .and_then(|id| stats.get(id))
-    else {
-        return unknown;
-    };
-    let Some(capacity) = item_stats.liquid_capacity else {
-        let weight = item_stats.total_weight(item_condition(item));
-        return ItemWeights {
-            game: Some(weight),
-            game_complete: true,
-            physical: Some(weight),
-            liquid: None,
-        };
-    };
-    if !capacity.is_finite() || capacity <= 0.0 {
-        return unknown;
-    }
-
-    let volume = data
-        .get("itemComponents")
-        .and_then(Value::as_array)
-        .and_then(|components| components.get(index))
-        .and_then(Value::as_object)
-        .and_then(|components| {
-            let mut matching = components.iter().filter(|(key, _)| {
-                key.split(',')
-                    .next()
-                    .is_some_and(|name| name.trim() == "WaterContainerItem")
-            });
-            let (_, component) = matching.next()?;
-            if matching.next().is_some() {
-                return None;
-            }
-            let stack = component.get("stack")?.as_array()?;
-            stack.iter().try_fold(0.0_f64, |total, entry| {
-                let amount = entry.get("amount")?.as_f64()?;
-                (amount.is_finite() && amount >= 0.0).then_some(total + amount)
-            })
-        })
-        .filter(|volume| volume.is_finite() && *volume <= f32::MAX as f64)
-        .map(|volume| volume as f32);
-    let Some(volume) = volume else {
-        return ItemWeights {
-            game: Some(item_stats.total_weight(item_condition(item))),
-            ..unknown
-        };
-    };
-    let liquid_weight = volume / 1000.0;
-    let game = item_stats.total_weight(volume / capacity);
-    let physical = item_stats.total_weight(0.0) + liquid_weight;
-    ItemWeights {
-        game: game.is_finite().then_some(game),
-        game_complete: game.is_finite(),
-        physical: physical.is_finite().then_some(physical),
-        liquid: liquid_weight.is_finite().then_some(liquid_weight),
-    }
-}
-
-/// Sum physical item estimates independently of carrying-capacity data.
-pub fn physical_load(data: &Value, stats: &HashMap<String, ItemStats>) -> PhysicalLoad {
-    let mut load = PhysicalLoad {
-        weight: 0.0,
-        complete: data.get("items").is_some_and(Value::is_array),
-    };
-    for index in 0..items(data).len() {
-        match item_weights(data, index, stats).physical {
-            Some(weight) if (load.weight + weight).is_finite() => load.weight += weight,
-            _ => load.complete = false,
-        }
-    }
-    load
-}
-
-/// Compute remaining storage capacity from the full, unmodified weight of the contents.
-pub fn container_space(
-    data: &Value,
-    index: usize,
-    stats: &HashMap<String, ItemStats>,
-) -> Option<ContainerSpace> {
-    let item = items(data).get(index)?;
-    let id = item.get("id").and_then(Value::as_str)?;
-    let capacity = stats.get(id)?.container_capacity?;
-    if !capacity.is_finite() || capacity < 0.0 {
-        return None;
-    }
-
-    let group = group_items(data)
-        .into_iter()
-        .find(|group| group.indices.first() == Some(&index))?;
-    let mut used = 0.0;
-    let mut complete = true;
-    for &child_index in group.indices.iter().skip(1) {
-        let weight = item_weights(data, child_index, stats);
-        complete &= weight.game_complete;
-        if let Some(value) = weight.game.filter(|value| value.is_finite()) {
-            if (used + value).is_finite() {
-                used += value;
-            } else {
-                complete = false;
-            }
-        } else {
-            complete = false;
-        }
-    }
-
-    let remaining = (capacity - used).max(0.0);
-    let over_capacity = (used - capacity).max(0.0);
-    Some(ContainerSpace {
-        capacity,
-        used,
-        remaining,
-        over_capacity,
-        complete,
-    })
-}
-
-// FIXME: The missing run-setting fallback hard-codes the game's normal `encumbrancecap` value (1.0).
-const DEFAULT_ENCUMBRANCE_CAP: f64 = 1.0;
-
-/// Computes the game's encumbrance value from equipped items, container
-/// contents, body state and run settings.
-pub fn carry_load(data: &Value, stats: &HashMap<String, ItemStats>) -> Option<CarryLoad> {
-    let body = data.get("body")?;
-    let skills = body.get("skills")?;
-    let field = |key: &str| body.get(key).and_then(Value::as_f64).map(|v| v as f32);
-    let weight_offset = field("weightOffset")?;
-    let sickness = field("sicknessAmount")?;
-    let hunger = field("hunger")?;
-    let thirst = field("thirst")?;
-    let strength = skills.get("STRFrom10").and_then(Value::as_f64)? as f32;
-    let resistance = skills.get("RESFrom10").and_then(Value::as_f64)? as f32;
-    let run_cap = data
-        .get("runSettings")
-        .and_then(Value::as_array)
-        .and_then(|settings| {
-            settings.iter().find_map(|setting| {
-                (setting.get("Item1").and_then(Value::as_str) == Some("encumbrancecap"))
-                    .then(|| setting.get("Item2").and_then(Value::as_f64))
-                    .flatten()
-            })
-        })
-        .unwrap_or(DEFAULT_ENCUMBRANCE_CAP) as f32;
-    // FIXME: This hard-codes the game's carry-capacity formula: base 11; weight offset baseline 15, clamp [-60, 0], factor 0.1; sickness factor 0.025; hunger <= 100 adds 1.5 and < 40 subtracts 1.5; thirst < 40 subtracts 1; STR/RES each scale by 0.5.
-    let base_capacity = 11.0 + (weight_offset + 15.0).clamp(-60.0, 0.0) * 0.1 - sickness * 0.025
-        + if hunger <= 100.0 { 1.5 } else { 0.0 }
-        - if hunger < 40.0 { 1.5 } else { 0.0 }
-        - if thirst < 40.0 { 1.0 } else { 0.0 }
-        + (strength * 0.5).min(resistance * 0.5);
-    let capacity = base_capacity * run_cap;
-    if !capacity.is_finite() || capacity <= 0.0 || !run_cap.is_finite() {
-        return None;
-    }
-
-    let all = items(data);
-    let mut weight = 0.0;
-    let mut complete = data.get("items").is_some_and(Value::is_array);
-    for group in group_items(data) {
-        let Some(&root_index) = group.indices.first() else {
-            continue;
-        };
-        let root = all.get(root_index)?;
-        let root_id = root.get("id").and_then(Value::as_str).unwrap_or("");
-        let Some(root_stats) = stats.get(root_id) else {
-            complete = false;
-            continue;
-        };
-        let root_weight = item_weights(data, root_index, stats);
-        complete &= root_weight.game_complete;
-        if let Some(value) = root_weight.game {
-            weight += value;
-        }
-        if group.indices.len() <= 1 {
-            continue;
-        }
-        let Some(multiplier) = root_stats.container_encumbrance else {
-            complete = false;
-            continue;
-        };
-        for &index in group.indices.iter().skip(1) {
-            let Some(item) = all.get(index) else {
-                complete = false;
-                continue;
-            };
-            let id = item.get("id").and_then(Value::as_str).unwrap_or("");
-            if !stats.contains_key(id) {
-                complete = false;
-                continue;
-            }
-            let item_weight = item_weights(data, index, stats);
-            complete &= item_weight.game_complete;
-            if let Some(value) = item_weight.game {
-                weight += value * multiplier;
-            }
-        }
-    }
-    weight.is_finite().then_some(CarryLoad {
-        weight,
-        capacity,
-        complete,
-    })
-}
-
-fn item_condition(item: &Value) -> f32 {
-    // FIXME: A missing item condition is hard-coded as full condition (1.0).
-    item.get("condition")
-        .and_then(Value::as_f64)
-        .map_or(1.0, |value| value as f32)
-}
-
-fn items(data: &Value) -> &[Value] {
-    data.get("items")
-        .and_then(Value::as_array)
-        .map_or(&[], Vec::as_slice)
-}
-
-/// Groups items by location, in order of first appearance.
-pub fn group_items(data: &Value) -> Vec<ItemGroup> {
-    let mut groups: Vec<ItemGroup> = Vec::new();
-    for (i, item) in items(data).iter().enumerate() {
-        let loc = Location::of(item);
-        match groups.iter_mut().find(|g| g.location == loc) {
-            Some(g) => g.indices.push(i),
-            None => groups.push(ItemGroup {
-                location: loc,
-                indices: vec![i],
-            }),
-        }
-    }
-    groups
-}
-
-/// Makes sure `items` and `itemComponents` exist and have the same length,
-/// and returns mutable references to both arrays.
-fn arrays_mut(data: &mut Value) -> Option<(&mut Vec<Value>, &mut Vec<Value>)> {
-    let obj = data.as_object_mut()?;
-    if !obj.get("itemComponents").is_some_and(Value::is_array) {
-        obj.insert("itemComponents".into(), json!([]));
-    }
-    let (mut it, mut co) = (None, None);
-    for (key, value) in obj.iter_mut() {
-        match (key.as_str(), value) {
-            ("items", Value::Array(a)) => it = Some(a),
-            ("itemComponents", Value::Array(a)) => co = Some(a),
-            _ => {}
-        }
-    }
-    let (it, co) = (it?, co?);
-    co.resize(it.len(), json!({}));
-    Some((it, co))
-}
-
-/// Builds a new item object with default values.
-pub fn new_item(id: &str, location: &Location) -> Value {
-    // FIXME: This hard-codes new-item defaults: condition 1.0, no wear slot, not favourited, empty label, and swatch 0.
-    let mut item = json!({
-        "id": id,
-        "condition": 1.0,
-        "slot": -1,
-        "wearSlot": null,
-        "favourited": false,
-        "label": "",
-        "swatch": 0
-    });
-    location.apply(&mut item);
-    item
-}
-
-/// Index at which a new item for `location` should be inserted: after the
-/// last item of that location, or — for a new location — after all inventory
-/// slot items (for slots) or at the end (for wear slots).
-fn insertion_index(data: &Value, location: &Location) -> usize {
-    let all = items(data);
-    if let Some(last) = all.iter().rposition(|it| Location::of(it) == *location) {
-        return last + 1;
-    }
-    match location {
-        Location::Slot(_) => all
-            .iter()
-            .rposition(|it| matches!(Location::of(it), Location::Slot(_)))
-            .map_or(0, |i| i + 1),
-        Location::Worn(_) => all.len(),
-    }
-}
-
-/// Adds an item (with optional components) and returns its index.
-pub fn add_item(data: &mut Value, item: Value, components: Value) -> Option<usize> {
-    let location = Location::of(&item);
-    let index = insertion_index(data, &location);
-    let (it, co) = arrays_mut(data)?;
-    it.insert(index, item);
-    co.insert(index, components);
-    Some(index)
-}
-
-/// Removes the item at `index` together with its components.
-pub fn remove_item(data: &mut Value, index: usize) -> Option<Value> {
-    let (it, co) = arrays_mut(data)?;
-    if index >= it.len() {
-        return None;
-    }
-    co.remove(index);
-    Some(it.remove(index))
-}
-
-/// Duplicates the item at `index` (including components) right after it.
-pub fn duplicate_item(data: &mut Value, index: usize) -> Option<usize> {
-    let (it, co) = arrays_mut(data)?;
-    let item = it.get(index)?.clone();
-    let comp = co.get(index).cloned().unwrap_or_else(|| json!({}));
-    it.insert(index + 1, item);
-    co.insert(index + 1, comp);
-    Some(index + 1)
-}
-
-/// Swaps the item at `index` with the previous (`up`) or next item of the
-/// same location. Returns the new index.
-pub fn move_within_group(data: &mut Value, index: usize, up: bool) -> Option<usize> {
-    let group = group_items(data)
-        .into_iter()
-        .find(|g| g.indices.contains(&index))?;
-    let pos = group.indices.iter().position(|&i| i == index)?;
-    let other = if up {
-        *group.indices.get(pos.checked_sub(1)?)?
-    } else {
-        *group.indices.get(pos + 1)?
-    };
-    let (it, co) = arrays_mut(data)?;
-    it.swap(index, other);
-    co.swap(index, other);
-    Some(other)
-}
-
-/// Moves an item to another location (appending it to that location).
-/// Returns the new index.
-pub fn move_to_location(data: &mut Value, index: usize, location: &Location) -> Option<usize> {
-    let mut item = items(data).get(index)?.clone();
-    if Location::of(&item) == *location {
-        return Some(index);
-    }
-    let comp = data
-        .get("itemComponents")
-        .and_then(|c| c.get(index))
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    remove_item(data, index)?;
-    location.apply(&mut item);
-    add_item(data, item, comp)
-}
-
-/// Heals every limb: full skin/muscle health, no pain, bleeding, infection,
-/// fractures, dislocations or shrapnel. Dismembered limbs are restored only
-/// when `regrow` is set.
-pub fn heal_limbs(data: &mut Value, regrow: bool) {
-    let Some(limbs) = data.get_mut("limbs").and_then(Value::as_array_mut) else {
-        return;
-    };
-    for limb in limbs.iter_mut().filter_map(Value::as_object_mut) {
-        heal_limb(limb, regrow);
-    }
-}
-
-/// Heals a single limb object (see [`heal_limbs`]).
-pub fn heal_limb(limb: &mut Map<String, Value>, regrow: bool) {
-    // FIXME: Healing hard-codes full skin/muscle health (100), zero pain/bleeding/infection/blood/shrapnel, and clears the listed injury flags.
-    if !regrow && limb.get("dismembered").and_then(Value::as_bool) == Some(true) {
-        return;
-    }
-    for key in ["skinHealth", "muscleHealth"] {
-        set_f64(limb, key, 100.0);
-    }
-    for key in ["pain", "bleedAmount", "infectionAmount", "furBloodAmount"] {
-        set_f64(limb, key, 0.0);
-    }
-    for key in [
-        "dislocated",
-        "broken",
-        "infected",
-        "splinted",
-        "blockedBleeding",
-    ] {
-        set_bool(limb, key, false);
-    }
-    if regrow {
-        set_bool(limb, "dismembered", false);
-    }
-    set_i64(limb, "shrapnel", 0);
-}
-
-/// Restores vital signs and removes acute conditions of the body.
-pub fn restore_vitals(data: &mut Value) {
-    let Some(body) = data.get_mut("body").and_then(Value::as_object_mut) else {
-        return;
-    };
-    // FIXME: These post-heal targets are hard-coded: blood/oxygen/respiration/consciousness/brain health 100, heart rate 70, pressure 120, temperature 37; listed acute-condition values are 0 and forced fibrillation/embolism flags are false.
-    let values: &[(&str, f64)] = &[
-        ("bloodVolume", 100.0),
-        ("bloodOxygen", 100.0),
-        ("heartRate", 70.0),
-        ("bloodPressure", 120.0),
-        ("respiratoryRate", 100.0),
-        ("fibrillationProgress", 0.0),
-        ("consciousness", 100.0),
-        ("brainHealth", 100.0),
-        ("shock", 0.0),
-        ("painShock", 0.0),
-        ("traumaAmount", 0.0),
-        ("internalBleeding", 0.0),
-        ("hemothorax", 0.0),
-        ("strokeAmount", 0.0),
-        ("septicShock", 0.0),
-        ("sicknessAmount", 0.0),
-        ("radiationSickness", 0.0),
-        ("hearingLoss", 0.0),
-        ("temperature", 37.0),
-        ("venomCurrent", 0.0),
-    ];
-    for &(key, value) in values {
-        if body.contains_key(key) {
-            set_f64(body, key, value);
-        }
-    }
-    for key in ["fibrillationForced", "hasPulmonaryEmbolism"] {
-        if body.contains_key(key) {
-            set_bool(body, key, false);
-        }
-    }
-}
-
-/// Satisfies food, water, stamina and sleep needs.
-pub fn fill_needs(data: &mut Value) {
-    let Some(body) = data.get_mut("body").and_then(Value::as_object_mut) else {
-        return;
-    };
-    // FIXME: This hard-codes filled needs to 100 and dirtiness/wetness to 0.
-    for (key, value) in [
-        ("hunger", 100.0),
-        ("thirst", 100.0),
-        ("stamina", 100.0),
-        ("energy", 100.0),
-        ("dirtyness", 0.0),
-        ("wetness", 0.0),
-    ] {
-        if body.contains_key(key) {
-            set_f64(body, key, value);
-        }
-    }
-}
-
-/// Sets a skill level and updates its experience boundaries the same way the
-/// game does (`Skills.UpdateExpBoundaries`). The relative progress towards the
-/// next level is kept. The derived `<KEY>From10` value is updated as well.
-pub fn set_skill_level(skills: &mut Map<String, Value>, key: &str, level: i64) {
-    // FIXME: The game skill-level range [0, 99] and `<KEY>From10 = level - 10` rule are hard-coded here.
-    let level = level.clamp(0, 99);
-    let old_min = get_f64(skills, &format!("min{key}")).unwrap_or(0.0);
-    let old_max = get_f64(skills, &format!("max{key}")).unwrap_or(0.0);
-    let exp = get_f64(skills, &format!("exp{key}")).unwrap_or(old_min);
-    let progress = if old_max > old_min {
-        ((exp - old_min) / (old_max - old_min)).clamp(0.0, 0.999)
-    } else {
-        0.0
-    };
-    let min = schema::experience_for_level(level as i32);
-    let max = schema::experience_for_level(level as i32 + 1);
-    set_i64(skills, key, level);
-    set_i64(skills, &format!("min{key}"), min);
-    set_i64(skills, &format!("max{key}"), max);
-    set_f64(
-        skills,
-        &format!("exp{key}"),
-        min as f64 + progress * (max - min) as f64,
-    );
-    if skills.contains_key(&format!("{key}From10")) {
-        set_f64(skills, &format!("{key}From10"), level as f64 - 10.0);
-    }
-}
-
-/// Gives `skills` the starting levels and gain multipliers of a character,
-/// with experience at the start of each level (port of `Skills.Setup`).
-pub fn setup_character_skills(skills: &mut Map<String, Value>, character: usize) {
-    let Some(def) = schema::CHARACTERS.get(character) else {
-        return;
-    };
-    for (index, skill) in schema::SKILLS.iter().enumerate() {
-        let key = skill.key;
-        set_skill_level(skills, key, def.base_skills[index]);
-        let min = get_f64(skills, &format!("min{key}")).unwrap_or(0.0);
-        set_f64(skills, &format!("exp{key}"), min);
-        set_f64(
-            skills,
-            &format!("{key}GainMult"),
-            def.gain_multipliers[index],
-        );
-    }
-}
-
-/// Returns `(level, progress 0..1)` for a skill.
-pub fn skill_progress(skills: &Map<String, Value>, key: &str) -> (i64, f64) {
-    let level = get_i64(skills, key).unwrap_or(0);
-    let min = get_f64(skills, &format!("min{key}")).unwrap_or(0.0);
-    let max = get_f64(skills, &format!("max{key}")).unwrap_or(0.0);
-    let exp = get_f64(skills, &format!("exp{key}")).unwrap_or(min);
-    let p = if max > min {
-        (exp - min) / (max - min)
-    } else {
-        0.0
-    };
-    (level, p.clamp(0.0, 1.0))
-}
+pub use ammunition::{AmmunitionStatus, ChamberState, ammunition_status, reload_ammunition};
+pub use balance::{BalanceRule, balance_containers};
+pub use health::{fill_needs, heal_limb, heal_limbs, restore_vitals};
+pub use inventory::{
+    ItemGroup, Location, add_item, duplicate_item, group_items, move_to_location,
+    move_within_group, new_item, remove_item,
+};
+pub use load::{
+    CarryLoad, ContainerSpace, ItemWeights, PhysicalLoad, carry_load, container_space,
+    item_weights, physical_load,
+};
+pub use skills::{set_skill_level, setup_character_skills, skill_progress};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{game_data::ItemStats, schema};
+    use serde_json::{Value, json};
+    use std::collections::HashMap;
+
+    fn runtime_fixture() -> crate::game_data::runtime::TestMetadata {
+        use crate::game_data::{metadata::Metadata, program::ScalarProgram};
+        let limb_defaults = json!({
+            "skinHealth": 80.0, "muscleHealth": 90.0, "pain": 0.0,
+            "bleedAmount": 0.0, "infectionAmount": 0.0, "furBloodAmount": 0.0,
+            "dislocated": false, "broken": false, "infected": false,
+            "splinted": false, "blockedBleeding": false, "shrapnel": 0,
+            "dismembered": false
+        })
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+        let item_defaults =
+            json!({"condition": 0.75, "favourited": false, "label": "", "swatch": 7})
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+        crate::game_data::runtime::scoped_for_test(Metadata {
+            limb_defaults,
+            item_defaults,
+            minimum_item_weight: Some(0.1),
+            carry_capacity: Some(ScalarProgram::test_linear(Some("hunger"), 0.1, 2.0)),
+            experience: Some(ScalarProgram::test_linear(None, 20.0, 0.0)),
+            skill_derived: [(
+                "STRFrom10".into(),
+                ScalarProgram::test_linear(Some("STR"), 1.0, -7.0),
+            )]
+            .into(),
+            skills: ["STR", "RES", "INT"]
+                .map(|key| schema::SkillDef {
+                    key,
+                    name: key,
+                    locale_key: key,
+                    help: "",
+                })
+                .into(),
+            characters: vec![
+                schema::CharacterDef {
+                    name: "Synthetic character",
+                    base_skills: [17, 4, 0],
+                    gain_multipliers: [1.0, 1.0, 0.5],
+                };
+                3
+            ],
+            ..Default::default()
+        })
+    }
 
     fn doc() -> Value {
         json!({
@@ -686,6 +132,313 @@ mod tests {
         }
     }
 
+    fn balancing_fixture(
+        capacities: [f32; 2],
+        weights: &[f32],
+    ) -> (Value, HashMap<String, ItemStats>) {
+        let mut stats = HashMap::new();
+        for (index, capacity) in capacities.into_iter().enumerate() {
+            let mut bag = item_stats(1.0, Some(if index == 0 { 0.25 } else { 1.0 }));
+            bag.container_capacity = Some(capacity);
+            bag.container_max_item_weight = Some(capacity);
+            bag.container_tag_restriction = Some(Default::default());
+            stats.insert(format!("bag{index}"), bag);
+        }
+        let mut data = json!({"items": [
+            {"id": "bag0", "slot": 0, "condition": 1.0},
+            {"id": "bag1", "slot": 1, "condition": 1.0}
+        ], "itemComponents": [{"marker": "bag0"}, {"marker": "bag1"}]});
+        for (index, &weight) in weights.iter().enumerate() {
+            let id = format!("cargo{index}");
+            stats.insert(id.clone(), item_stats(weight, None));
+            let item = json!({"id": id, "slot": 1, "condition": 1.0, "favourited": false});
+            add_item(&mut data, item, json!({"marker": id})).unwrap();
+        }
+        (data, stats)
+    }
+
+    #[test]
+    fn balancing_finds_exact_pack_instead_of_greedy_and_preserves_components() {
+        let (mut data, stats) = balancing_fixture([10.0, 30.0], &[6.0, 5.0, 5.0]);
+        assert_eq!(
+            balance_containers(&mut data, &stats, BalanceRule::CarryWeight, true),
+            Ok(2)
+        );
+        let groups = group_items(&data);
+        let first = &groups[0];
+        let stored: Vec<_> = first
+            .indices
+            .iter()
+            .skip(1)
+            .map(|&i| data["items"][i]["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(stored, ["cargo1", "cargo2"]);
+        for (item, component) in data["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(data["itemComponents"].as_array().unwrap())
+        {
+            assert_eq!(item["id"], component["marker"]);
+        }
+        let balanced = data.clone();
+        assert_eq!(
+            balance_containers(&mut data, &stats, BalanceRule::CarryWeight, true),
+            Ok(0)
+        );
+        assert_eq!(data, balanced);
+    }
+
+    #[test]
+    fn balancing_respects_favourites_tags_and_per_item_limits() {
+        let (mut data, mut stats) = balancing_fixture([20.0, 30.0], &[6.0, 5.0, 4.0, 3.0]);
+        stats.get_mut("bag0").unwrap().container_tag_restriction = Some(["medical".into()].into());
+        stats.get_mut("bag0").unwrap().container_max_item_weight = Some(5.0);
+        for id in ["cargo0", "cargo1", "cargo3"] {
+            stats
+                .get_mut(id)
+                .unwrap()
+                .item_tags
+                .insert("medical".into());
+        }
+        data["items"][3]["favourited"] = json!(true);
+        assert_eq!(
+            balance_containers(&mut data, &stats, BalanceRule::CarryWeight, true),
+            Ok(1)
+        );
+        let first = &group_items(&data)[0];
+        assert_eq!(first.indices.len(), 2);
+        assert_eq!(data["items"][first.indices[1]]["id"], "cargo3");
+    }
+
+    #[test]
+    fn balancing_keeps_large_specialized_contents_without_favourite_flags() {
+        let (mut original, mut stats) = balancing_fixture([10.0, 30.0], &[6.0, 5.0, 5.0]);
+        let mut holder = item_stats(1.0, Some(0.9));
+        holder.container_capacity = Some(3.0);
+        holder.container_max_item_weight = Some(0.1);
+        holder.container_tag_restriction = Some(["ammo".into()].into());
+        stats.insert("specialized".into(), holder);
+        let mut round = item_stats(0.03, None);
+        round.item_tags.insert("ammo".into());
+        stats.insert("round".into(), round);
+        add_item(
+            &mut original,
+            json!({"id":"specialized","slot":2,"condition":1.0}),
+            json!({}),
+        )
+        .unwrap();
+        for marker in 0..91 {
+            add_item(
+                &mut original,
+                json!({"id":"round","slot":2,"condition":1.0,"favourited":false,"label":marker}),
+                json!({"marker":marker}),
+            )
+            .unwrap();
+        }
+        for rule in BalanceRule::ALL {
+            let mut data = original.clone();
+            balance_containers(&mut data, &stats, rule, false).unwrap();
+            let group = group_items(&data)
+                .into_iter()
+                .find(|g| g.location == Location::Slot(2))
+                .unwrap();
+            assert_eq!(group.indices.len(), 92);
+            for (marker, &index) in group.indices.iter().skip(1).enumerate() {
+                assert_eq!(data["items"][index]["id"], "round");
+                assert_eq!(data["items"][index]["label"], marker);
+                assert_eq!(data["itemComponents"][index]["marker"], marker);
+            }
+        }
+    }
+
+    #[test]
+    fn balancing_can_repair_overfilled_specialized_storage() {
+        let (mut data, mut stats) = balancing_fixture([10.0, 10.0], &[6.0, 5.0, 4.0]);
+        stats.get_mut("bag1").unwrap().container_tag_restriction = Some(["medical".into()].into());
+        for id in ["cargo0", "cargo1", "cargo2"] {
+            stats
+                .get_mut(id)
+                .unwrap()
+                .item_tags
+                .insert("medical".into());
+        }
+        balance_containers(&mut data, &stats, BalanceRule::CarryWeight, true).unwrap();
+        for group in group_items(&data) {
+            assert_eq!(
+                container_space(&data, group.indices[0], &stats)
+                    .unwrap()
+                    .over_capacity,
+                0.0
+            );
+        }
+    }
+
+    #[test]
+    fn balancing_fractional_three_bin_objectives_match_exhaustive_search() {
+        let weights = [1.3525_f32, 0.29875, 0.3, 0.3, 0.1];
+        let (mut original, mut stats) = balancing_fixture([2.0, 2.4], &weights);
+        let mut bag = item_stats(1.0, Some(0.6));
+        bag.container_capacity = Some(1.8);
+        bag.container_max_item_weight = Some(1.0);
+        bag.container_tag_restriction = Some(Default::default());
+        stats.insert("bag2".into(), bag);
+        stats.insert("fixed".into(), item_stats(0.7, None));
+        add_item(
+            &mut original,
+            json!({"id":"bag2","slot":2,"condition":1.0}),
+            json!({}),
+        )
+        .unwrap();
+        add_item(
+            &mut original,
+            json!({"id":"fixed","slot":2,"condition":1.0,"favourited":true}),
+            json!({}),
+        )
+        .unwrap();
+        let capacities = [f64::from(2.0_f32), f64::from(2.4_f32), f64::from(1.8_f32)];
+        for rule in BalanceRule::ALL {
+            let score = |loads: &[f64; 3]| match rule {
+                BalanceRule::CarryWeight => {
+                    loads[0] * 0.25 + loads[1] + loads[2] * f64::from(0.6_f32)
+                }
+                BalanceRule::EqualWeight => loads.iter().map(|w| w * w).sum(),
+                BalanceRule::EqualFill => {
+                    let fills = std::array::from_fn::<_, 3, _>(|i| loads[i] / capacities[i]);
+                    let mean = fills.iter().sum::<f64>() / 3.0;
+                    fills.iter().map(|fill| (fill - mean).powi(2)).sum()
+                }
+            };
+            let mut optimum = f64::INFINITY;
+            for mut assignment in 0..3_usize.pow(weights.len() as u32) {
+                let mut loads = [0.0, 0.0, f64::from(0.7_f32)];
+                let mut valid = true;
+                for weight in weights {
+                    let bin = assignment % 3;
+                    assignment /= 3;
+                    loads[bin] += f64::from(weight);
+                    valid &= bin != 2 || weight <= 1.0;
+                }
+                if valid
+                    && loads
+                        .iter()
+                        .zip(capacities)
+                        .all(|(&load, capacity)| load <= capacity)
+                {
+                    optimum = optimum.min(score(&loads));
+                }
+            }
+            let mut data = original.clone();
+            balance_containers(&mut data, &stats, rule, true).unwrap();
+            let loads: Vec<f64> = group_items(&data)
+                .iter()
+                .map(|group| {
+                    group
+                        .indices
+                        .iter()
+                        .skip(1)
+                        .map(|&index| f64::from(item_weights(&data, index, &stats).game.unwrap()))
+                        .sum()
+                })
+                .collect();
+            assert!(
+                (score(&[loads[0], loads[1], loads[2]]) - optimum).abs() < 1e-10,
+                "{rule:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn balancing_rules_have_distinct_verified_objectives() {
+        let (data, stats) = balancing_fixture([10.0, 20.0], &[2.0, 2.0, 2.0, 2.0, 2.0, 2.0]);
+        for (rule, expected) in [
+            (BalanceRule::EqualWeight, 6.0),
+            (BalanceRule::EqualFill, 4.0),
+        ] {
+            let mut data = data.clone();
+            balance_containers(&mut data, &stats, rule, true).unwrap();
+            assert_eq!(container_space(&data, 0, &stats).unwrap().used, expected);
+        }
+    }
+
+    #[test]
+    fn balancing_rules_match_exhaustive_feasible_distributions() {
+        let weights = [6.0_f32, 5.0, 4.0, 3.0];
+        let (original, stats) = balancing_fixture([10.0, 18.0], &weights);
+        for rule in BalanceRule::ALL {
+            let score = |first: f64, second: f64| match rule {
+                BalanceRule::CarryWeight => first * 0.25 + second,
+                BalanceRule::EqualWeight => first.powi(2) + second.powi(2),
+                BalanceRule::EqualFill => (first / 10.0 - second / 18.0).powi(2),
+            };
+            let mut optimum = f64::INFINITY;
+            for mask in 0..1 << weights.len() {
+                let first: f64 = weights
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| mask & (1 << index) != 0)
+                    .map(|(_, weight)| f64::from(*weight))
+                    .sum();
+                let second = 18.0 - first;
+                if first <= 10.0 && second <= 18.0 {
+                    optimum = optimum.min(score(first, second));
+                }
+            }
+            let mut data = original.clone();
+            balance_containers(&mut data, &stats, rule, true).unwrap();
+            let groups = group_items(&data);
+            let loads: Vec<_> = groups
+                .iter()
+                .map(|group| {
+                    f64::from(
+                        container_space(&data, group.indices[0], &stats)
+                            .unwrap()
+                            .used,
+                    )
+                })
+                .collect();
+            assert!(
+                (score(loads[0], loads[1]) - optimum).abs() < 1e-8,
+                "{rule:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn balancing_rejects_incomplete_weights_and_unaligned_components_without_mutating() {
+        let (mut data, mut stats) = balancing_fixture([10.0, 20.0], &[4.0]);
+        stats.remove("cargo0");
+        let before = data.clone();
+        assert!(balance_containers(&mut data, &stats, BalanceRule::CarryWeight, true).is_err());
+        assert_eq!(data, before);
+        data["itemComponents"] = json!([]);
+        let before = data.clone();
+        assert!(balance_containers(&mut data, &stats, BalanceRule::CarryWeight, true).is_err());
+        assert_eq!(data, before);
+    }
+
+    #[test]
+    fn balancing_repairs_overcapacity_and_reports_impossible_packing_without_mutating() {
+        let (mut data, stats) = balancing_fixture([10.0, 10.0], &[6.0, 5.0, 4.0]);
+        balance_containers(&mut data, &stats, BalanceRule::CarryWeight, true).unwrap();
+        for group in group_items(&data) {
+            assert_eq!(
+                container_space(&data, group.indices[0], &stats)
+                    .unwrap()
+                    .over_capacity,
+                0.0
+            );
+        }
+        let (mut data, stats) = balancing_fixture([10.0, 10.0], &[8.0, 8.0, 4.0]);
+        let before = data.clone();
+        assert!(
+            balance_containers(&mut data, &stats, BalanceRule::CarryWeight, true)
+                .unwrap_err()
+                .contains("No valid distribution")
+        );
+        assert_eq!(data, before);
+    }
+
     #[test]
     fn groups_follow_holder_then_contents() {
         let g = group_items(&doc());
@@ -696,6 +449,7 @@ mod tests {
 
     #[test]
     fn carry_load_uses_container_multiplier_and_game_capacity_formula() {
+        let _metadata = runtime_fixture();
         let data = json!({
             "body": {
                 "weightOffset": 0.0,
@@ -716,7 +470,7 @@ mod tests {
         ]);
         let load = carry_load(&data, &stats).unwrap();
         assert_eq!(load.weight, 3.0);
-        assert_eq!(load.capacity, 13.5);
+        assert_eq!(load.capacity, 12.0);
         assert!(load.complete);
     }
 
@@ -756,6 +510,7 @@ mod tests {
 
     #[test]
     fn carry_load_does_not_claim_completeness_for_missing_item_data() {
+        let _metadata = runtime_fixture();
         let data = json!({
             "body": {
                 "weightOffset": 0.0,
@@ -773,6 +528,7 @@ mod tests {
 
     #[test]
     fn liquid_weight_uses_volume_and_keeps_game_and_physical_load_separate() {
+        let _metadata = runtime_fixture();
         let data = json!({
             "body": {"weightOffset": 0.0, "sicknessAmount": 0.0, "hunger": 100.0,
                      "thirst": 100.0, "skills": {"STRFrom10": 4.0, "RESFrom10": 2.0}},
@@ -806,6 +562,7 @@ mod tests {
 
     #[test]
     fn empty_overfilled_and_invalid_liquid_data_are_handled() {
+        let _metadata = runtime_fixture();
         let mut bottle = item_stats(1.25, None);
         bottle.scale_weight_with_condition = true;
         bottle.liquid_capacity = Some(500.0);
@@ -835,7 +592,7 @@ mod tests {
     #[test]
     fn components_stay_aligned_with_items() {
         let mut d = doc();
-        let i = add_item(&mut d, new_item("lantern", &Location::Slot(3)), json!({})).unwrap();
+        let i = add_item(&mut d, json!({"id": "lantern", "slot": 3}), json!({})).unwrap();
         assert_eq!(i, 2, "new slot groups go after existing slot items");
         assert_eq!(
             ids(&d),
@@ -871,42 +628,78 @@ mod tests {
 
     #[test]
     fn heal_respects_dismemberment_unless_regrowing() {
+        let _metadata = runtime_fixture();
         let mut d = doc();
-        heal_limbs(&mut d, false);
-        assert_eq!(d["limbs"][0]["skinHealth"], json!(100.0));
+        heal_limbs(&mut d, false).unwrap();
+        assert_eq!(d["limbs"][0]["skinHealth"], json!(80.0));
         assert_eq!(d["limbs"][0]["broken"], json!(false));
         assert_eq!(d["limbs"][0]["shrapnel"], json!(0));
         assert_eq!(d["limbs"][1]["skinHealth"], json!(0.0));
-        heal_limbs(&mut d, true);
+        heal_limbs(&mut d, true).unwrap();
         assert_eq!(d["limbs"][1]["dismembered"], json!(false));
     }
 
     #[test]
     fn skill_level_change_updates_boundaries_and_keeps_progress() {
+        let _metadata = runtime_fixture();
         let mut d = doc();
         let skills = d["body"]["skills"].as_object_mut().unwrap();
-        set_skill_level(skills, "STR", 14);
+        set_skill_level(skills, "STR", 14).unwrap();
         assert_eq!(skills["STR"], json!(14));
-        assert_eq!(skills["minSTR"], json!(1255));
-        assert_eq!(skills["maxSTR"], json!(1484));
-        assert_eq!(skills["STRFrom10"], json!(4.0));
+        assert_eq!(skills["minSTR"], json!(280));
+        assert_eq!(skills["maxSTR"], json!(300));
+        assert_eq!(skills["STRFrom10"], json!(7.0));
         let (_, p) = skill_progress(skills, "STR");
         assert!((p - 0.5).abs() < 1e-3);
     }
 
     #[test]
     fn character_setup_uses_the_game_starting_skills() {
+        let _metadata = runtime_fixture();
         let mut d = doc();
         let skills = d["body"]["skills"].as_object_mut().unwrap();
-        setup_character_skills(skills, 2);
+        setup_character_skills(skills, 2).unwrap();
         assert_eq!(skills["STR"], json!(17));
-        assert_eq!(skills["minSTR"], json!(schema::experience_for_level(17)));
+        assert_eq!(
+            skills["minSTR"],
+            json!(schema::experience_for_level(17).unwrap())
+        );
         assert_eq!(
             skills["expSTR"],
-            json!(schema::experience_for_level(17) as f64)
+            json!(schema::experience_for_level(17).unwrap() as f64)
         );
         assert_eq!(skills["INT"], json!(0));
         assert_eq!(skills["INTGainMult"], json!(0.5));
         assert_eq!(skills["STRGainMult"], json!(1.0));
+    }
+
+    #[test]
+    fn unavailable_runtime_data_never_fabricates_an_edit() {
+        let _metadata = crate::game_data::runtime::scoped_for_test(Default::default());
+        let mut data = doc();
+        let before = data.clone();
+        assert!(heal_limbs(&mut data, true).is_err());
+        assert!(restore_vitals(&mut data).is_err());
+        assert!(fill_needs(&mut data).is_err());
+        assert_eq!(data, before);
+        let skills = data["body"]["skills"].as_object_mut().unwrap();
+        assert!(set_skill_level(skills, "STR", 14).is_err());
+        assert_eq!(data, before);
+        assert!(new_item("example", &Location::Slot(0)).is_err());
+    }
+
+    #[test]
+    fn new_items_and_skill_edits_use_runtime_defaults_not_old_constants() {
+        let _metadata = runtime_fixture();
+        let item = new_item("example", &Location::Slot(1)).unwrap();
+        assert_eq!(item["condition"], 0.75);
+        assert_eq!(item["swatch"], 7);
+        assert_eq!(item["slot"], 1);
+        let mut skills = serde_json::Map::new();
+        set_skill_level(&mut skills, "STR", 100).unwrap();
+        assert_eq!(skills["STR"], 100);
+        let before = skills.clone();
+        assert!(set_skill_level(&mut skills, "STR", -1).is_err());
+        assert_eq!(skills, before);
     }
 }

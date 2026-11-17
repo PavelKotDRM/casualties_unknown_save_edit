@@ -1,20 +1,16 @@
 //! Limbs tab: a painted body figure (like the in-game health screen) and an
 //! editor for the selected limb.
 
-// FIXME: ~525 lines; `body_figure` is a ~145-line painter routine (layout, hit testing, fill
-// colours, fracture/dismemberment marks, tooltips) and `legend` ~75 lines of hand-placed swatches,
-// both sitting next to the limb editor/table. Move the figure painting (`FIGURE`, `body_figure`,
-// `small_figure`, `fracture_mark`, `legend`) into `ui/limbs/figure.rs` with the geometry
-// separated from the painting, and move `limb_condition`/`limb_problems` (pure save-document
-// logic that is `pub` but only needed by the UI here) into `model::health` so `diagnostics.rs`
-// and the report can share them instead of re-deriving limb state.
-
-use egui::{Color32, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use egui::{RichText, Ui};
 use serde_json::Value;
 
-use super::{Names, colors, field_row, other_fields, quality_color};
+use super::{Names, colors, field_row, other_fields};
 use crate::json::{get_bool, get_f64};
 use crate::{model, schema};
+
+mod figure;
+mod geometry;
+pub use figure::{body_figure, legend, small_figure};
 
 /// UI state of the limbs tab.
 #[derive(Default)]
@@ -22,26 +18,6 @@ pub struct LimbsState {
     /// Index of the selected limb.
     pub selected: usize,
 }
-
-/// Layout of the body figure in a 200 × 400 design space. The viewer's left
-/// is the character's right side (`F` limbs), as on the in-game screen.
-const FIGURE: [(f32, f32, f32, f32); 15] = [
-    (75.0, 5.0, 125.0, 62.0),     // Head
-    (68.0, 68.0, 132.0, 148.0),   // UpTorso
-    (72.0, 150.0, 128.0, 214.0),  // DownTorso
-    (40.0, 70.0, 64.0, 144.0),    // UpArmF
-    (38.0, 146.0, 62.0, 212.0),   // DownArmF
-    (34.0, 214.0, 62.0, 244.0),   // HandF
-    (136.0, 70.0, 160.0, 144.0),  // UpArmB
-    (138.0, 146.0, 162.0, 212.0), // DownArmB
-    (138.0, 214.0, 166.0, 244.0), // HandB
-    (72.0, 218.0, 98.0, 292.0),   // ThighF
-    (74.0, 294.0, 97.0, 362.0),   // CrusF
-    (62.0, 364.0, 97.0, 384.0),   // FootF
-    (102.0, 218.0, 128.0, 292.0), // ThighB
-    (103.0, 294.0, 126.0, 362.0), // CrusB
-    (103.0, 364.0, 138.0, 384.0), // FootB
-];
 
 /// Overall condition (`0..1`) of a limb: the worse of skin and muscle health.
 pub fn limb_condition(limb: &Value) -> f32 {
@@ -100,246 +76,9 @@ pub fn limb_problems(limb: &Value) -> Vec<&'static str> {
     out
 }
 
-/// Paints the body figure scaled to `height`. Returns the index of a
-/// clicked limb.
-pub fn body_figure(
-    ui: &mut Ui,
-    limbs: &[Value],
-    names: Names,
-    selected: Option<usize>,
-    height: f32,
-) -> Option<usize> {
-    let scale = height / 400.0;
-    let (rect, response) = ui.allocate_exact_size(vec2(200.0 * scale, height), Sense::click());
-    let to_screen = |(x0, y0, x1, y1): (f32, f32, f32, f32)| {
-        Rect::from_min_max(
-            rect.min + vec2(x0, y0) * scale,
-            rect.min + vec2(x1, y1) * scale,
-        )
-    };
-    let hover = response.hover_pos();
-    let mut hovered = None;
-    let painter = ui.painter_at(rect.expand(4.0));
-    let outline = ui.visuals().strong_text_color();
-    for (i, &shape) in FIGURE.iter().enumerate() {
-        let r = to_screen(shape);
-        let limb = limbs.get(i).unwrap_or(&Value::Null);
-        let obj = limb.as_object();
-        let flag = |k| obj.and_then(|o| get_bool(o, k)).unwrap_or(false);
-        let num = |k| obj.and_then(|o| get_f64(o, k)).unwrap_or(0.0);
-        let radius = if i == 0 {
-            r.width() * 0.45
-        } else {
-            5.0 * scale
-        };
-        if hover.is_some_and(|p| r.contains(p)) {
-            hovered = Some(i);
-        }
-        if flag("dismembered") {
-            painter.rect_stroke(
-                r,
-                radius,
-                Stroke::new(1.0, Color32::from_gray(110)),
-                StrokeKind::Inside,
-            );
-        } else {
-            painter.rect_filled(
-                r,
-                radius,
-                quality_color(limb_condition(limb)).gamma_multiply(0.9),
-            );
-            let infection = num("infectionAmount");
-            if infection > 0.0 || flag("infected") {
-                let t = (infection / 100.0).clamp(0.3, 1.0) as f32;
-                painter.rect_filled(
-                    r.shrink(r.width().min(r.height()) * 0.25),
-                    radius,
-                    colors::INFECTION.gamma_multiply(t * 0.8),
-                );
-            }
-            if flag("broken") {
-                let c = r.center();
-                let half = vec2(r.width() * 0.32, r.height().min(r.width()) * 0.18);
-                fracture_mark(&painter, Rect::from_center_size(c, half * 2.0));
-            }
-            if flag("dislocated") {
-                painter.circle_stroke(
-                    pos2(r.center().x, r.top() + 4.0 * scale),
-                    4.0 * scale,
-                    Stroke::new(2.0, colors::WARN),
-                );
-            }
-            if flag("blockedBleeding") {
-                let y = r.top() + r.height() * 0.2;
-                painter.line_segment(
-                    [pos2(r.left(), y), pos2(r.right(), y)],
-                    Stroke::new(3.0 * scale, Color32::BLACK),
-                );
-            }
-            if flag("splinted") {
-                painter.rect_stroke(
-                    r.shrink(2.0),
-                    radius,
-                    Stroke::new(1.5, Color32::from_gray(230)),
-                    StrokeKind::Inside,
-                );
-            }
-            let bleed = num("bleedAmount");
-            if bleed > 0.0 {
-                let size = (2.5 + (bleed as f32 / 100.0) * 4.0) * scale.max(0.6);
-                painter.circle_filled(
-                    pos2(r.right() - size - 1.0, r.top() + size + 2.0),
-                    size,
-                    colors::BLOOD,
-                );
-            }
-            if obj
-                .and_then(|o| o.get("prostheticInfo"))
-                .and_then(|p| p.get("hasProsthetic"))
-                .and_then(Value::as_bool)
-                == Some(true)
-            {
-                painter.rect_stroke(
-                    r,
-                    radius,
-                    Stroke::new(2.0, Color32::from_rgb(160, 200, 255)),
-                    StrokeKind::Outside,
-                );
-            }
-        }
-        let stroke = if selected == Some(i) {
-            Stroke::new(2.5, colors::ACCENT)
-        } else if hovered == Some(i) {
-            Stroke::new(1.5, outline)
-        } else {
-            Stroke::new(1.0, Color32::from_black_alpha(160))
-        };
-        painter.rect_stroke(r, radius, stroke, StrokeKind::Outside);
-    }
-    if let Some(i) = hovered {
-        let limb = limbs.get(i).unwrap_or(&Value::Null);
-        response.clone().on_hover_ui_at_pointer(|ui| {
-            ui.strong(names.limb(i));
-            if let Some(obj) = limb.as_object() {
-                for key in [
-                    "skinHealth",
-                    "muscleHealth",
-                    "pain",
-                    "bleedAmount",
-                    "infectionAmount",
-                ] {
-                    if let (Some(spec), Some(v)) = (schema::limb_field(key), get_f64(obj, key)) {
-                        ui.horizontal(|ui| {
-                            ui.label(format!("{}:", names.text(spec.label)));
-                            ui.colored_label(super::value_color(spec, v as f32), super::fmt_num(v));
-                        });
-                    }
-                }
-            }
-            let problems = limb_problems(limb);
-            if !problems.is_empty() {
-                ui.colored_label(colors::WARN, problems.join(", "));
-            }
-        });
-    }
-    if response.clicked() { hovered } else { None }
-}
-
-/// Zig-zag crack drawn on broken limbs.
-fn fracture_mark(painter: &egui::Painter, r: Rect) {
-    let points = vec![
-        r.left_center(),
-        pos2(r.left() + r.width() * 0.33, r.top()),
-        pos2(r.left() + r.width() * 0.66, r.bottom()),
-        r.right_center(),
-    ];
-    painter.add(egui::Shape::line(
-        points.clone(),
-        Stroke::new(3.5, Color32::BLACK),
-    ));
-    painter.add(egui::Shape::line(points, Stroke::new(2.0, Color32::WHITE)));
-}
-
-/// Legend explaining the figure's markers.
-pub fn legend(ui: &mut Ui, names: Names) {
-    let item = |ui: &mut Ui, paint: &dyn Fn(&egui::Painter, Rect), text: &str| {
-        ui.horizontal(|ui| {
-            let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-            paint(ui.painter(), r);
-            ui.small(names.text(text).to_string());
-        });
-    };
-    item(
-        ui,
-        &|p, r| {
-            let (left, right) = r.split_left_right_at_fraction(0.5);
-            p.rect_filled(left, 2.0, quality_color(1.0));
-            p.rect_filled(right, 2.0, quality_color(0.0));
-        },
-        "Condition (healthy → injured)",
-    );
-    item(
-        ui,
-        &|p, r| {
-            p.circle_filled(r.center(), 4.0, colors::BLOOD);
-        },
-        "Bleeding",
-    );
-    item(
-        ui,
-        &|p, r| {
-            p.rect_filled(r.shrink(3.0), 2.0, colors::INFECTION);
-        },
-        "Infection",
-    );
-    item(ui, &|p, r| fracture_mark(p, r.shrink(1.0)), "Fracture");
-    item(
-        ui,
-        &|p, r| {
-            p.circle_stroke(r.center(), 4.0, Stroke::new(2.0, colors::WARN));
-        },
-        "Dislocation",
-    );
-    item(
-        ui,
-        &|p, r| {
-            p.line_segment(
-                [r.left_center(), r.right_center()],
-                Stroke::new(3.0, Color32::BLACK),
-            );
-        },
-        "Tourniquet",
-    );
-    item(
-        ui,
-        &|p, r| {
-            p.rect_stroke(
-                r,
-                2.0,
-                Stroke::new(1.0, Color32::from_gray(110)),
-                StrokeKind::Inside,
-            );
-        },
-        "Dismembered",
-    );
-    item(
-        ui,
-        &|p, r| {
-            p.rect_stroke(
-                r.shrink(2.0),
-                2.0,
-                Stroke::new(2.0, Color32::from_rgb(160, 200, 255)),
-                StrokeKind::Outside,
-            );
-        },
-        "Prosthetic",
-    );
-}
-
 fn heal_button(ui: &mut Ui, data: &mut Value, label: &str, regrow: bool) -> bool {
     if ui.button(label).clicked() {
-        model::heal_limbs(data, regrow);
-        return true;
+        return super::operation_result(ui, model::heal_limbs(data, regrow));
     }
     false
 }
@@ -426,8 +165,7 @@ fn limb_editor(ui: &mut Ui, data: &mut Value, names: Names, state: &mut LimbsSta
             .button(format!("✚ {}", names.text("Heal this limb")))
             .clicked()
         {
-            model::heal_limb(limb, true);
-            changed = true;
+            changed |= super::operation_result(ui, model::heal_limb(limb, true));
         }
     });
     super::card(ui, |ui| {
@@ -518,15 +256,6 @@ fn limb_table(ui: &mut Ui, data: &Value, names: Names, state: &mut LimbsState) {
                     }
                 });
         });
-}
-
-/// Painted marker used in summaries: the figure without interactions.
-pub fn small_figure(ui: &mut Ui, data: &Value, names: Names, height: f32) -> Option<usize> {
-    let limbs = data
-        .get("limbs")
-        .and_then(Value::as_array)
-        .map_or(&[][..], Vec::as_slice);
-    body_figure(ui, limbs, names, None, height)
 }
 
 #[cfg(test)]

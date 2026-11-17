@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag that matches the version in Cargo.toml, e.g. `git tag v0.1.0 && git push origin v0.1.0`.
+# Push a tag that matches the version in Cargo.toml, e.g. `git tag v0.2.0 && git push origin v0.2.0`.
 on:
   push:
     tags: ['v*']
@@ -26,8 +26,8 @@ jobs:
             target: windows-x86_64
           - os: ubuntu-latest
             target: linux-x86_64
-          - os: macos-latest
-            target: macos-aarch64
+#          - os: macos-latest
+#            target: macos-aarch64
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -87,7 +87,66 @@ jobs:
           path: dist
           pattern: release-*
           merge-multiple: true
+      - name: Require VirusTotal credentials
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+        run: |
+          if [ -z "$VT_API_KEY" ]; then
+            echo "::error::Set the VT_API_KEY repository Actions secret before releasing"
+            exit 1
+          fi
+      - name: Prepare release executables for scanning
+        run: |
+          mkdir -p scan
+          for archive in dist/*.zip; do
+            destination="scan/$(basename "$archive" .zip)"
+            mkdir -p "$destination"
+            unzip -j "$archive" '*/cu_save_editor.exe' -d "$destination"
+          done
+          for archive in dist/*.tar.gz; do
+            destination="scan/$(basename "$archive" .tar.gz)"
+            mkdir -p "$destination"
+            tar -xzf "$archive" -C "$destination" --strip-components=1 --wildcards '*/cu_save_editor'
+          done
+          mapfile -d '' executables < <(find scan -type f \( -name cu_save_editor -o -name cu_save_editor.exe \) -print0)
+          if [ "${#executables[@]}" -ne 3 ]; then
+            echo "::error::Expected exactly three release executables for VirusTotal"
+            exit 1
+          fi
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+      - name: Submit public release executables to VirusTotal
+        id: virustotal
+        uses: crazy-max/ghaction-virustotal@v5.0.0
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          # A large executable uses an upload-URL request as well as the upload.
+          request_rate: 1
+          files: |
+            scan/**/cu_save_editor
+            scan/**/cu_save_editor.exe
+      - name: Add VirusTotal analysis links to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VT_ANALYSIS: ${{ steps.virustotal.outputs.analysis }}
+        run: |
+          IFS=',' read -ra analyses <<< "$VT_ANALYSIS"
+          if [ "${#analyses[@]}" -ne 3 ]; then
+            echo "::error::VirusTotal did not return three submission links"
+            exit 1
+          fi
+          {
+            printf '\n\n### VirusTotal analyses\n\n'
+            for analysis in "${analyses[@]}"; do
+              file="${analysis%%=*}"
+              url="${analysis#*=}"
+              printf -- '- [%s](%s)\n' "${file#scan/}" "$url"
+            done
+            printf '\nSubmission links are not a guarantee of safety; review the completed analyses.\n'
+          } > virustotal-reports.md
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json body --jq .body > release-notes.md
+          cat virustotal-reports.md >> release-notes.md
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
+          cat virustotal-reports.md >> "$GITHUB_STEP_SUMMARY"

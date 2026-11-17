@@ -33,7 +33,7 @@ pub enum Kind {
 }
 
 /// Metadata of a single field.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FieldSpec {
     /// JSON key.
     pub key: &'static str,
@@ -53,68 +53,8 @@ pub struct FieldSpec {
     pub good: Good,
 }
 
-const fn gauge(
-    key: &'static str,
-    label: &'static str,
-    min: f32,
-    max: f32,
-    unit: &'static str,
-    good: Good,
-    help: &'static str,
-) -> FieldSpec {
-    FieldSpec {
-        key,
-        label,
-        help,
-        kind: Kind::Gauge,
-        min,
-        max,
-        unit,
-        good,
-    }
-}
-
-const fn num(key: &'static str, label: &'static str, help: &'static str) -> FieldSpec {
-    FieldSpec {
-        key,
-        label,
-        help,
-        kind: Kind::Number,
-        min: f32::NEG_INFINITY,
-        max: f32::INFINITY,
-        unit: "",
-        good: Good::Neutral,
-    }
-}
-
-const fn int(key: &'static str, label: &'static str, help: &'static str) -> FieldSpec {
-    FieldSpec {
-        key,
-        label,
-        help,
-        kind: Kind::Int,
-        min: f32::NEG_INFINITY,
-        max: f32::INFINITY,
-        unit: "",
-        good: Good::Neutral,
-    }
-}
-
-const fn flag(key: &'static str, label: &'static str, help: &'static str) -> FieldSpec {
-    FieldSpec {
-        key,
-        label,
-        help,
-        kind: Kind::Flag,
-        min: 0.0,
-        max: 1.0,
-        unit: "",
-        good: Good::Neutral,
-    }
-}
-
 /// A titled group of body fields.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FieldGroup {
     /// Group title.
     pub title: &'static str,
@@ -133,7 +73,7 @@ mod run;
 pub use body::{BODY_GROUPS, body_field};
 pub use character::{
     CHARACTERS, CharacterDef, HOLD_SLOTS, HoldSlotDef, LAYERS, SKILLS, SkillDef,
-    experience_for_level,
+    experience_for_level, try_experience_for_level,
 };
 pub use endings::{ENDINGS, EndingDef};
 pub use limbs::{LIMB_FIELDS, LIMBS, LimbDef, limb_field};
@@ -141,40 +81,3 @@ pub use run::{
     PresetValue, RUN_PRESETS, RUN_SETTINGS, RunPreset, RunSettingDef, RunSettingKind, run_setting,
     run_settings_for_preset,
 };
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn experience_matches_values_written_by_the_game() {
-        // Taken from a real save: STR 13 -> [1062, 1255), RES 14 -> [1255, 1484), INT 12 -> [897, 1062).
-        assert_eq!(experience_for_level(12), 897);
-        assert_eq!(experience_for_level(13), 1062);
-        assert_eq!(experience_for_level(14), 1255);
-        assert_eq!(experience_for_level(15), 1484);
-        assert_eq!(experience_for_level(0), 0);
-    }
-
-    #[test]
-    fn built_in_run_presets_cover_all_game_settings() {
-        let normal = run_settings_for_preset("normal").unwrap();
-        assert_eq!(normal.len(), RUN_SETTINGS.len());
-        assert_eq!(
-            normal
-                .iter()
-                .find(|setting| setting["Item1"] == "baselootdensity")
-                .unwrap()["Item2"],
-            1.0
-        );
-        assert_eq!(
-            run_settings_for_preset("relaxed")
-                .unwrap()
-                .iter()
-                .find(|setting| setting["Item1"] == "startingsupplies")
-                .unwrap()["Item2"],
-            2
-        );
-        assert!(run_settings_for_preset("missing").is_none());
-    }
-}

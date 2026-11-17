@@ -1,6 +1,12 @@
 pub(super) fn translate(source: &str) -> Option<&'static str> {
     match source {
+        "Game data unavailable. Select the game folder in Game data." => {
+            Some("Данные игры недоступны. Выберите папку игры в меню «Данные игры».")
+        }
         "New save…" => Some("Новое сохранение…"),
+        "New-run generation is unavailable: start a run in the game and open its save instead" => {
+            Some("Создание нового прохождения недоступно: начните игру и откройте её сохранение.")
+        }
         "Create new save…" => Some("Создать новое сохранение…"),
         "Create new save" => Some("Создать новое сохранение"),
         "Create save…" => Some("Создать сохранение…"),

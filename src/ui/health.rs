@@ -19,8 +19,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
             )
             .clicked()
         {
-            model::restore_vitals(data);
-            changed = true;
+            changed |= super::operation_result(ui, model::restore_vitals(data));
         }
         if ui
             .button(format!("🍖 {}", names.text("Fill needs")))
@@ -31,8 +30,7 @@ pub fn show(ui: &mut Ui, data: &mut Value, names: Names) -> bool {
             )
             .clicked()
         {
-            model::fill_needs(data);
-            changed = true;
+            changed |= super::operation_result(ui, model::fill_needs(data));
         }
     });
     ui.separator();

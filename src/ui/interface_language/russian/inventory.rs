@@ -1,5 +1,43 @@
 pub(super) fn translate(source: &str) -> Option<&'static str> {
     match source {
+        "Minimum carrying load" => Some("Минимальная переносимая нагрузка"),
+        "Equal stored weight" => Some("Одинаковый вес содержимого"),
+        "Equal fill percentage" => Some("Одинаковый процент заполнения"),
+        "Move favourites" => Some("Перемещать избранное"),
+        "Balance containers" => Some("Сбалансировать контейнеры"),
+        "{count} items moved" => Some("Перемещено предметов: {count}"),
+        "Equipped items and compatible contents of specialized containers stay in place. Redistribute the remaining items only. If an optimum cannot be proven within the search limit, nothing is changed." => {
+            Some(
+                "Экипировка и подходящее содержимое специализированных контейнеров остаются на месте. Перераспределяются только остальные предметы. Если оптимальность не доказана до лимита поиска, ничего не меняется.",
+            )
+        }
+        "Ammunition" => Some("Боеприпасы"),
+        "Rounds" => Some("Патроны"),
+        "Chamber" => Some("Патронник"),
+        "Live round" => Some("Боевой патрон"),
+        "Spent casing" => Some("Стреляная гильза"),
+        "No round" => Some("Нет патрона"),
+        "No magazine inserted" => Some("Магазин не вставлен"),
+        "Reload from inventory" => Some("Перезарядить из инвентаря"),
+        "Select a magazine or weapon to reload it." => {
+            Some("Для перезарядки выберите магазин или оружие.")
+        }
+        "Uses compatible non-favourite ammunition. Inserts a magazine when needed and chambers a round. Safety is unchanged." => {
+            Some(
+                "Использует совместимые боеприпасы не из избранного. При необходимости вставляет магазин и досылает патрон. Предохранитель не меняется.",
+            )
+        }
+        "Already loaded, or no compatible non-favourite ammunition is available" => {
+            Some("Уже заряжено, либо нет совместимых боеприпасов вне избранного")
+        }
+        "At least two equipped containers are needed" => {
+            Some("Нужно хотя бы два экипированных контейнера")
+        }
+        "Balancing search limit reached. No items were moved; pin more items as favourites or choose another rule." => {
+            Some(
+                "Достигнут лимит поиска. Предметы не перемещены; закрепите больше предметов в избранном или выберите другое правило.",
+            )
+        }
         "The first item of a location is held / worn; the following ones are stored inside it." => {
             Some("Первый предмет в ячейке удерживается или надет; остальные хранятся внутри него.")
         }

@@ -4,14 +4,6 @@
 //! widgets shared between them: colour-coded gauges similar to the in-game
 //! health screen, field editors for JSON values and display-name lookup.
 
-// FIXME: ~700 lines; besides the module declarations this file holds shared widgets
-// (`gauge_bar`, `mini_gauge`, `number_editor`, `field_row`, `generic_row`, `other_fields`,
-// `section_heading`, `card`, `bounded_window`), colour helpers (`colors`, `quality_color`,
-// `value_color`) and a ~220-line `impl Names` of display-name lookups plus string utilities
-// (`prettify_id`, `strip_rich_text`, `category_icon`, `fmt_num`). Split into `ui/widgets.rs`,
-// `ui/colors.rs`, `ui/names.rs` and `ui/text.rs`, leaving `mod.rs` with declarations and
-// re-exports only.
-
 pub mod about;
 pub mod achievements;
 pub mod backups;
@@ -25,628 +17,86 @@ pub mod overview;
 pub mod raw;
 pub mod report;
 pub mod run;
+pub mod spoilers;
 pub mod wiki;
 
-use egui::{
-    Align2, Color32, CornerRadius, FontId, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
-};
-use serde_json::{Map, Value};
-use std::borrow::Cow;
+pub mod colors;
+mod names;
+mod text;
+mod widgets;
 
-use crate::json::{self, is_integer};
-use crate::locale::Locale;
-use crate::schema::{self, FieldSpec, Good, Kind};
+pub use colors::{quality, quality_color, value_color};
+pub use names::Names;
+pub use text::{category_icon, fmt_num, prettify_id, strip_rich_text};
+pub use widgets::{
+    bounded_window, card, field_row, gauge_bar, generic_row, mini_gauge, number_editor,
+    other_fields, section_heading,
+};
 
 /// Width of the label column in field rows.
 pub const LABEL_WIDTH: f32 = 190.0;
 
-/// Colour palette.
-pub mod colors {
-    use egui::Color32;
-    /// Healthy value.
-    pub const GOOD: Color32 = Color32::from_rgb(76, 175, 80);
-    /// Borderline value.
-    pub const WARN: Color32 = Color32::from_rgb(230, 180, 40);
-    /// Dangerous value.
-    pub const BAD: Color32 = Color32::from_rgb(220, 60, 50);
-    /// Value without judgement.
-    pub const NEUTRAL: Color32 = Color32::from_rgb(70, 130, 200);
-    /// Accent for headers.
-    pub const ACCENT: Color32 = Color32::from_rgb(255, 170, 60);
-    /// Blood red.
-    pub const BLOOD: Color32 = Color32::from_rgb(200, 20, 30);
-    /// Infection green.
-    pub const INFECTION: Color32 = Color32::from_rgb(120, 200, 60);
-}
-
-/// Interpolates red → yellow → green for a quality in `0..=1`.
-pub fn quality_color(q: f32) -> Color32 {
-    let q = q.clamp(0.0, 1.0);
-    let lerp = |a: Color32, b: Color32, t: f32| {
-        let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-        Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
-    };
-    if q < 0.5 {
-        lerp(colors::BAD, colors::WARN, q * 2.0)
-    } else {
-        lerp(colors::WARN, colors::GOOD, (q - 0.5) * 2.0)
-    }
-}
-
-/// Quality (`0` = bad, `1` = good) of a value according to its spec, or
-/// `None` for neutral fields.
-pub fn quality(spec: &FieldSpec, value: f32) -> Option<f32> {
-    let span = (spec.max - spec.min).max(f32::EPSILON);
-    let t = ((value - spec.min) / span).clamp(0.0, 1.0);
-    match spec.good {
-        Good::High => Some(t),
-        Good::Low => Some(1.0 - t),
-        Good::Near(target) => {
-            let half = (target - spec.min).max(spec.max - target).max(f32::EPSILON);
-            Some((1.0 - (value - target).abs() / half * 1.6).clamp(0.0, 1.0))
+/// Reports an edit failure to the application and indicates whether it succeeded.
+pub fn operation_result(ui: &egui::Ui, result: Result<(), String>) -> bool {
+    match result {
+        Ok(()) => true,
+        Err(error) => {
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::unique("model_operation_error"), error);
+            });
+            false
         }
-        Good::Neutral => None,
-    }
-}
-
-/// Colour for a value according to its spec.
-pub fn value_color(spec: &FieldSpec, value: f32) -> Color32 {
-    quality(spec, value).map_or(colors::NEUTRAL, quality_color)
-}
-
-/// Formats a number compactly (no trailing zeros, at most 2 decimals).
-pub fn fmt_num(v: f64) -> String {
-    if v.fract() == 0.0 && v.abs() < 1e9 {
-        format!("{v:.0}")
-    } else {
-        let s = format!("{v:.2}");
-        s.trim_end_matches('0').trim_end_matches('.').to_owned()
-    }
-}
-
-/// Paints an interactive horizontal gauge. Clicking or dragging on the bar
-/// sets the value. Returns `true` if the value changed.
-pub fn gauge_bar(ui: &mut Ui, spec: &FieldSpec, value: &mut f64, width: f32) -> bool {
-    let height = ui.spacing().interact_size.y;
-    let (rect, response) =
-        ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
-    let (min, max) = (spec.min as f64, spec.max as f64);
-    let mut changed = false;
-    if let Some(pos) = response.interact_pointer_pos()
-        && (response.is_pointer_button_down_on() || response.clicked())
-    {
-        let t = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64;
-        let mut new = min + t * (max - min);
-        if spec.kind == Kind::Int {
-            new = new.round();
-        } else if max - min >= 20.0 {
-            new = (new * 10.0).round() / 10.0;
-        } else {
-            new = (new * 1000.0).round() / 1000.0;
-        }
-        if (new - *value).abs() > f64::EPSILON {
-            *value = new;
-            changed = true;
-        }
-    }
-    if ui.is_rect_visible(rect) {
-        let painter = ui.painter_at(rect);
-        let visuals = ui.visuals();
-        let radius = CornerRadius::same(4);
-        painter.rect_filled(rect, radius, visuals.extreme_bg_color);
-        let span = (max - min).max(f64::EPSILON);
-        let x_of =
-            |v: f64| rect.left() + (((v - min) / span).clamp(0.0, 1.0) as f32) * rect.width();
-        // Bars of ranges spanning zero grow from zero, like a balance meter.
-        let origin = if min < 0.0 && max > 0.0 { 0.0 } else { min };
-        let (x0, x1) = (x_of(origin), x_of(*value));
-        let fill = egui::Rect::from_x_y_ranges(x0.min(x1)..=x0.max(x1), rect.y_range());
-        painter.rect_filled(
-            fill,
-            radius,
-            value_color(spec, *value as f32).gamma_multiply(0.85),
-        );
-        if origin != min {
-            painter.line_segment(
-                [egui::pos2(x0, rect.top()), egui::pos2(x0, rect.bottom())],
-                Stroke::new(1.0, visuals.weak_text_color()),
-            );
-        }
-        if let Good::Near(target) = spec.good {
-            let x = x_of(target as f64);
-            painter.line_segment(
-                [
-                    egui::pos2(x, rect.top() + 2.0),
-                    egui::pos2(x, rect.bottom() - 2.0),
-                ],
-                Stroke::new(1.5, Color32::from_white_alpha(140)),
-            );
-        }
-        let stroke = if response.hovered() {
-            visuals.widgets.hovered.bg_stroke
-        } else {
-            visuals.widgets.inactive.bg_stroke
-        };
-        painter.rect_stroke(rect, radius, stroke, StrokeKind::Inside);
-        let text = format!("{}{}", fmt_num(*value), spec.unit);
-        let font = FontId::proportional(12.5);
-        for (offset, color) in [
-            (Vec2::splat(1.0), Color32::from_black_alpha(200)),
-            (Vec2::ZERO, Color32::WHITE),
-        ] {
-            painter.text(
-                rect.center() + offset,
-                Align2::CENTER_CENTER,
-                &text,
-                font.clone(),
-                color,
-            );
-        }
-    }
-    response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Click or drag to set the value");
-    changed
-}
-
-/// Read-only small gauge (used in summaries).
-pub fn mini_gauge(ui: &mut Ui, spec: &FieldSpec, value: f64, width: f32) -> Response {
-    let height = 8.0;
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-    let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
-    let t = ((value as f32 - spec.min) / (spec.max - spec.min).max(f32::EPSILON)).clamp(0.0, 1.0);
-    let fill = egui::Rect::from_min_size(rect.min, Vec2::new(rect.width() * t, height));
-    painter.rect_filled(fill, 3.0, value_color(spec, value as f32));
-    response.on_hover_text(format!("{}: {}{}", spec.label, fmt_num(value), spec.unit))
-}
-
-/// Label cell of a field row, with tooltip and the JSON key on hover.
-fn field_label(ui: &mut Ui, spec: &FieldSpec, names: Names) {
-    ui.add_sized(
-        [LABEL_WIDTH, ui.spacing().interact_size.y],
-        egui::Label::new(names.text(spec.label).to_string()).truncate(),
-    )
-    .on_hover_ui(|ui| {
-        ui.strong(names.text(spec.label).to_string());
-        if !spec.help.is_empty() {
-            ui.label(names.text(spec.help).to_string());
-        }
-        ui.weak(format!("JSON key: {}", spec.key));
-    });
-}
-
-/// Edits a numeric JSON value in place. Returns `true` if changed.
-pub fn number_editor(ui: &mut Ui, slot: &mut Value, speed: f64) -> bool {
-    let int = matches!(slot, Value::Number(n) if is_integer(n));
-    if int {
-        let mut v = slot.as_i64().unwrap_or(0);
-        let changed = ui
-            .add(egui::DragValue::new(&mut v).speed(speed.max(0.1)))
-            .changed();
-        if changed {
-            json::set_number_preserving(slot, v as f64);
-        }
-        changed
-    } else {
-        let mut v = slot.as_f64().unwrap_or(0.0);
-        let changed = ui
-            .add(egui::DragValue::new(&mut v).speed(speed).max_decimals(4))
-            .changed();
-        if changed {
-            json::set_number_preserving(slot, v);
-        }
-        changed
-    }
-}
-
-/// Renders one row for a known field of `obj` (label + editor).
-///
-/// Missing fields are shown as disabled. Returns `true` if the value changed.
-pub fn field_row(
-    ui: &mut Ui,
-    spec: &FieldSpec,
-    obj: &mut Map<String, Value>,
-    bar_width: f32,
-    names: Names,
-) -> bool {
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        field_label(ui, spec, names);
-        let Some(slot) = obj.get_mut(spec.key) else {
-            ui.weak(names.text("— not present in this save —").to_string());
-            return;
-        };
-        match spec.kind {
-            Kind::Flag => {
-                let mut b = slot.as_bool().unwrap_or(false);
-                let text = if b {
-                    RichText::new(names.text("Yes").to_string()).color(colors::ACCENT)
-                } else {
-                    RichText::new(names.text("No").to_string())
-                };
-                if ui.checkbox(&mut b, text).changed() {
-                    *slot = Value::Bool(b);
-                    changed = true;
-                }
-            }
-            Kind::Gauge => {
-                let mut v = slot.as_f64().unwrap_or(0.0);
-                if gauge_bar(ui, spec, &mut v, bar_width) {
-                    json::set_number_preserving(slot, v);
-                    changed = true;
-                }
-                let speed = ((spec.max - spec.min) as f64 / 300.0).max(0.001);
-                changed |= number_editor(ui, slot, speed);
-            }
-            Kind::Number => changed |= number_editor(ui, slot, 0.1),
-            Kind::Int => changed |= number_editor(ui, slot, 0.2),
-        }
-    });
-    changed
-}
-
-/// Generic row for a field without a spec (label = key).
-pub fn generic_row(ui: &mut Ui, key: &str, value: &mut Value) -> bool {
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.add_sized(
-            [LABEL_WIDTH, ui.spacing().interact_size.y],
-            egui::Label::new(RichText::new(key).monospace()).truncate(),
-        );
-        changed = raw::leaf_editor(ui, value);
-    });
-    changed
-}
-
-/// Shows unknown fields of an object (those for which `known` is false) with
-/// generic editors, so data from newer game versions stays editable.
-/// Returns `true` if anything changed.
-pub fn other_fields(
-    ui: &mut Ui,
-    id: &str,
-    obj: &mut Map<String, Value>,
-    known: &dyn Fn(&str) -> bool,
-) -> bool {
-    let unknown: Vec<String> = obj.keys().filter(|k| !known(k)).cloned().collect();
-    if unknown.is_empty() {
-        return false;
-    }
-    let mut changed = false;
-    egui::CollapsingHeader::new(format!("Other fields ({})", unknown.len()))
-        .id_salt(id)
-        .show(ui, |ui| {
-            for key in unknown {
-                if let Some(v) = obj.get_mut(&key) {
-                    changed |= if v.is_object() || v.is_array() {
-                        raw::subtree(ui, &format!("{id}/{key}"), &key, v)
-                    } else {
-                        generic_row(ui, &key, v)
-                    };
-                }
-            }
-        });
-    changed
-}
-
-/// Draws a section heading with an icon.
-pub fn section_heading(ui: &mut Ui, names: Names, icon: &str, title: &str) {
-    ui.add_space(4.0);
-    ui.label(
-        RichText::new(format!("{icon}  {}", names.text(title)))
-            .heading()
-            .color(colors::ACCENT),
-    );
-    ui.add_space(2.0);
-}
-
-/// A framed card.
-pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-    egui::Frame::group(ui.style())
-        .corner_radius(CornerRadius::same(6))
-        .inner_margin(egui::Margin::same(10))
-        .show(ui, add)
-        .inner
-}
-
-/// A resizable window that never grows past the main window; its content
-/// should use a [`egui::ScrollArea`] for anything taller than the screen.
-pub fn bounded_window<'open>(
-    ctx: &egui::Context,
-    title: impl Into<egui::WidgetText>,
-    default_size: Vec2,
-    min_width: f32,
-) -> egui::Window<'open> {
-    let screen = ctx.content_rect();
-    let max_size = (screen.size() - Vec2::splat(32.0)).max(Vec2::new(240.0, 200.0));
-    egui::Window::new(title)
-        .constrain_to(screen)
-        .resizable(true)
-        .default_size(default_size.min(max_size))
-        .min_width(min_width.min(max_size.x))
-        .min_height(240.0f32.min(max_size.y))
-        .max_size(max_size)
-}
-
-/// Display-name lookup that prefers the game's language file.
-#[derive(Clone, Copy)]
-pub struct Names<'a> {
-    /// Loaded locale, if the game installation was found.
-    pub locale: Option<&'a Locale>,
-    /// Language used by the editor's interface.
-    pub interface_language: InterfaceLanguage<'a>,
-}
-
-impl Names<'_> {
-    /// Translates an editor interface string using the selected UI language.
-    pub fn text<'a>(&self, source: &'a str) -> Cow<'a, str> {
-        self.interface_language.text(source)
-    }
-
-    /// Item display name (falls back to the id).
-    pub fn item(&self, id: &str) -> String {
-        self.locale
-            .and_then(|l| l.item_name(id))
-            .map_or_else(|| prettify_id(id), str::to_owned)
-    }
-
-    /// Item description, if available.
-    pub fn item_description(&self, id: &str) -> Option<String> {
-        self.locale
-            .and_then(|l| l.item_description(id))
-            .map(strip_rich_text)
-    }
-
-    /// Liquid display name.
-    pub fn liquid(&self, id: &str) -> String {
-        self.item(id)
-    }
-
-    /// Limb display name by index.
-    pub fn limb(&self, index: usize) -> String {
-        let Some(def) = schema::LIMBS.get(index) else {
-            return format!("Limb #{index}");
-        };
-        let name = self
-            .locale
-            .and_then(|l| l.other(def.object))
-            .unwrap_or(def.name)
-            .to_owned();
-        self.text(&name).into_owned()
-    }
-
-    /// Run setting label.
-    pub fn run_setting(&self, id: &str) -> String {
-        self.locale
-            .and_then(|l| l.other(&format!("runset{id}")))
-            .map(str::to_owned)
-            .or_else(|| schema::run_setting(id).map(|d| d.label.to_owned()))
-            .unwrap_or_else(|| id.to_owned())
-    }
-
-    /// Run setting description.
-    pub fn run_setting_description(&self, id: &str) -> Option<String> {
-        self.locale
-            .and_then(|l| l.other(&format!("runset{id}dsc")))
-            .map(strip_rich_text)
-    }
-
-    /// Dropdown option label of a run setting.
-    pub fn run_setting_option(&self, id: &str, index: usize) -> String {
-        let fallback = schema::run_setting(id).and_then(|d| match d.kind {
-            schema::RunSettingKind::Dropdown(opts) => opts.get(index).copied(),
-            _ => None,
-        });
-        let key = fallback.map(|f| format!("runset{id}{}", f.to_lowercase()));
-        key.and_then(|k| self.locale.and_then(|l| l.other(&k)).map(str::to_owned))
-            .or_else(|| fallback.map(str::to_owned))
-            .unwrap_or_else(|| format!("Option {index}"))
-    }
-
-    /// Skill display name.
-    pub fn skill(&self, def: &schema::SkillDef) -> String {
-        let name = self
-            .locale
-            .and_then(|l| l.other(def.locale_key))
-            .unwrap_or(def.name)
-            .to_owned();
-        self.text(&name).into_owned()
-    }
-
-    /// Playable character name (`character` field), e.g. `[SAW-03] "Milky"`.
-    pub fn character(&self, character: i64) -> String {
-        let index = usize::try_from(character).ok();
-        index
-            .and_then(|i| {
-                self.locale
-                    .and_then(|l| l.other(&format!("char{i}name")))
-                    .map(strip_rich_text)
-                    .or_else(|| schema::CHARACTERS.get(i).map(|d| d.name.to_owned()))
-            })
-            .unwrap_or_else(|| {
-                self.text("Character #{index}")
-                    .replace("{index}", &character.to_string())
-            })
-    }
-
-    /// Character name, or a placeholder while the game still has it locked.
-    pub fn character_if_unlocked(
-        &self,
-        character: usize,
-        progress: &crate::player_prefs::GameProgress,
-    ) -> String {
-        if progress.is_unlocked(character) {
-            self.character(character as i64)
-        } else {
-            format!(
-                "🔒 {}",
-                self.text("Character #{index}")
-                    .replace("{index}", &character.to_string())
-            )
-        }
-    }
-
-    /// Layer name, or a placeholder until the player has descended to it.
-    pub fn layer_if_reached(
-        &self,
-        biome: i64,
-        progress: &crate::player_prefs::GameProgress,
-    ) -> String {
-        if progress.is_layer_reached(biome) {
-            self.layer(biome)
-        } else {
-            format!(
-                "🔒 {}",
-                self.text("Layer {number}")
-                    .replace("{number}", &(biome + 1).to_string())
-            )
-        }
-    }
-
-    /// Ending name with the case status of its end screen, e.g.
-    /// `Escape — MORE INFO AT MEETING`.
-    pub fn ending(&self, index: usize) -> String {
-        let Some(def) = schema::ENDINGS.get(index) else {
-            return self.ending_placeholder(index);
-        };
-        let status = self
-            .locale
-            .and_then(|l| l.other(def.status_key))
-            .map(strip_rich_text)
-            .unwrap_or_else(|| def.status.to_owned());
-        format!("{} — {status}", self.text(def.name))
-    }
-
-    /// Ending name, or a placeholder until the player has reached it.
-    pub fn ending_if_discovered(
-        &self,
-        index: usize,
-        progress: &crate::player_prefs::GameProgress,
-    ) -> String {
-        if progress.is_ending_discovered(index) {
-            self.ending(index)
-        } else {
-            format!("🔒 {}", self.ending_placeholder(index))
-        }
-    }
-
-    fn ending_placeholder(&self, index: usize) -> String {
-        self.text("Ending #{number}")
-            .replace("{number}", &(index + 1).to_string())
-    }
-
-    /// Dossier of a character (`char<i>desc`) from the game's language file.
-    pub fn character_description(&self, character: usize) -> Option<String> {
-        self.locale
-            .and_then(|l| l.other(&format!("char{character}desc")))
-            .map(strip_rich_text)
-    }
-
-    /// Quirks of a character (`char<i>quirks`) from the game's language file.
-    pub fn character_quirks(&self, character: usize) -> Option<String> {
-        self.locale
-            .and_then(|l| l.other(&format!("char{character}quirks")))
-            .map(strip_rich_text)
-    }
-
-    /// Requirement shown by the game for a locked character.
-    pub fn character_unlock_requirement(&self) -> String {
-        self.locale
-            .and_then(|l| l.other("characterunlockdsc"))
-            .map(strip_rich_text)
-            .unwrap_or_else(|| {
-                self.text("Finish a run with the previous character to unlock")
-                    .into_owned()
-            })
-    }
-
-    /// Hold slot display name (`items[].slot`), e.g. right hand or mouth.
-    pub fn hold_slot(&self, slot: i64) -> String {
-        let Some(def) = usize::try_from(slot)
-            .ok()
-            .and_then(|i| schema::HOLD_SLOTS.get(i))
-        else {
-            return self
-                .text("Unknown slot {index}")
-                .replace("{index}", &slot.to_string());
-        };
-        self.locale
-            .and_then(|l| l.other(def.locale_key))
-            .map_or_else(|| self.text(def.name).into_owned(), str::to_owned)
-    }
-
-    /// Name of the layer the run resumes on (`biome` field).
-    pub fn layer(&self, biome: i64) -> String {
-        let from_locale = biome
-            .checked_add(1)
-            .and_then(|layer| {
-                self.locale
-                    .and_then(|locale| locale.other(&format!("layertitle{layer}")))
-            })
-            .map(|s| s.replace('\n', " — "));
-        from_locale
-            .or_else(|| {
-                usize::try_from(biome)
-                    .ok()
-                    .and_then(|i| schema::LAYERS.get(i))
-                    .map(|s| (*s).to_owned())
-            })
-            .unwrap_or_else(|| self.text("Unknown layer").into_owned())
-    }
-}
-
-/// Turns `sterilizedbandage` into `Sterilizedbandage` as a last-resort name.
-pub fn prettify_id(id: &str) -> String {
-    let mut c = id.chars();
-    match c.next() {
-        Some(f) => f.to_uppercase().chain(c).collect(),
-        None => "(empty id)".to_owned(),
-    }
-}
-
-/// Removes Unity rich-text tags (`<color=..>`, `<b>`, `<sprite ..>`).
-pub fn strip_rich_text(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut depth = 0;
-    for ch in s.chars() {
-        match ch {
-            '<' => depth += 1,
-            '>' if depth > 0 => depth -= 1,
-            _ if depth == 0 => out.push(ch),
-            _ => {}
-        }
-    }
-    out
-}
-
-/// Icon for an item category.
-pub fn category_icon(category: &str) -> &'static str {
-    match category {
-        "medical" => "✚",
-        "drug" => "💊",
-        "food" => "🍞",
-        "water" => "💧",
-        "container" => "🎒",
-        "tool" => "🔧",
-        "utility" => "🔦",
-        "trash" => "🗑",
-        "custom" => "★",
-        "unobtainable" => "⛔",
-        _ => "📦",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::locale::Locale;
+    use crate::schema;
+    use egui::Vec2;
+
+    #[test]
+    #[allow(deprecated)]
+    fn model_operation_errors_are_reported_to_the_application() {
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            assert!(!operation_result(ui, Err("missing data".to_owned())));
+            assert!(operation_result(ui, Ok(())));
+        });
+        output.textures_delta.clear();
+        assert_eq!(
+            egui::Id::new("model_operation_error"),
+            egui::Id::unique("model_operation_error")
+        );
+        assert_eq!(
+            ctx.data_mut(
+                |data| data.remove_temp::<String>(egui::Id::unique("model_operation_error"))
+            ),
+            Some("missing data".to_owned())
+        );
+    }
 
     #[test]
     fn quality_follows_good_direction() {
-        let pain = schema::limb_field("pain").unwrap();
-        assert_eq!(quality(pain, 0.0), Some(1.0));
-        assert_eq!(quality(pain, 100.0), Some(0.0));
-        let hr = schema::body_field("heartRate").unwrap();
-        assert!(quality(hr, 70.0).unwrap() > quality(hr, 180.0).unwrap());
+        let pain = schema::FieldSpec {
+            key: "pain",
+            label: "Pain",
+            help: "",
+            kind: schema::Kind::Gauge,
+            min: 0.0,
+            max: 100.0,
+            unit: "",
+            good: schema::Good::Low,
+        };
+        assert_eq!(quality(&pain, 0.0), Some(1.0));
+        assert_eq!(quality(&pain, 100.0), Some(0.0));
+        let hr = schema::FieldSpec {
+            good: schema::Good::Near(70.0),
+            max: 200.0,
+            ..pain
+        };
+        assert!(quality(&hr, 70.0).unwrap() > quality(&hr, 180.0).unwrap());
     }
 
     #[test]

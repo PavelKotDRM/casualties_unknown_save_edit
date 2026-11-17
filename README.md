@@ -38,7 +38,6 @@ unmodified file is written back byte-for-byte identical.
     - [Testing](#testing)
     - [CI/CD and releases](#cicd-and-releases)
   - [License](#license)
-  - [TODO](#todo)
 
 ## Features
 
@@ -62,33 +61,45 @@ unmodified file is written back byte-for-byte identical.
   `deepestlayer` to the deepest layer reached. The editor reads and changes
   these values on the *Character* tab. Close the game first, because it caches
   its settings while running.
-- **Endings.** The game records each ending it has seen in the same settings. 
-  The *Endings* card, the wiki and *Help→ About* show how many were found. 
-  An ending's name and how to reach it stay hidden ("🔒 Ending #N") until it 
-  is discovered.
+- **Endings.** The game records each ending it has seen in the same settings.
+  The *Endings* card, the wiki and *Help → About* show discovered progress
+  without revealing the total. In the card or wiki, explicitly request a hint
+  for another ending, then reveal further details one click at a time.
+  Available stages are the local Steam achievement description, the game's
+  ending name, its ending-screen status, and how-to text when supplied by the
+  game data. Missing stages are skipped; the editor does not invent walkthroughs.
+  Revealing hints does not mark endings as discovered or change game settings.
 - **Achievements** (*Help → Achievements*). The game's 40 Steam achievements
   with overall progress, unlock dates, search and an All / Unlocked / Locked
   filter. They are read, read-only, from Steam's local stats cache. Hidden
   achievements stay hidden until unlocked.
-- **No spoilers.** Characters the game still has locked, layers not reached yet
-  and undiscovered endings appear only as "🔒" placeholders, both in selection
-  lists and in the wiki.
+- **No spoilers by default.** Unreached layers and undiscovered endings are
+  omitted, including from wiki search and the new-save layer picker, so counting
+  placeholders cannot spoil their totals. Separate **Reveal total layers** and
+  **Reveal total endings** buttons opt into counts and locked placeholders, not
+  hidden names or hints. Characters still use locked placeholders.
+  Reveal choices persist across restarts. Use **Hide ending hints** or the
+  corresponding **Hide … total** button to conceal them again.
+- **Unavailable progress stays unknown.** Missing game data or unreadable
+  preferences never count as completed progress. Unknown entries do not reveal
+  character, layer or ending spoilers.
 
 ### Tools
 
-- **New save wizard** (*File → New save…*). Pick a built-in world preset or
+- **New save wizard** (*File → New save…*). Pick a game-defined world preset or
   customise every setting, choose the starting layer (limited to layers already
   reached in the game) and configure the character (limited to unlocked
   characters).
 - **Game wiki** (*Help → Game wiki*, F1). A searchable reference built from the
-  editor's knowledge and the game's language files: characters, endings, skills
+  installed game's metadata and language files: characters, endings, skills
   and the XP table, body and limb stats with healthy ranges, status effects,
   world settings, presets, layers, items and liquids. Works without an open
   save. Item and medicine entries list value, spoilage, crafting qualities,
   contents and the effects of use (per use or per whole item, timed effects,
   possible random or overdose effects), read from the game's code. Search
   matches every word, ranks title matches first and highlights hits (Ctrl+F,
-  Esc to clear).
+  Esc to clear). Articles and search results are cached; only visible cards
+  are laid out, including in large item listings.
 - **Backups** (*File → Backups…*). A timestamped copy goes to a
   `SaveEditorBackups` folder next to the save whenever a file is opened,
   restored over or overwritten after an outside change. The browser compares any
@@ -118,6 +129,10 @@ unmodified file is written back byte-for-byte identical.
   the Unity assets. The editor reads metadata and IL only and never runs game
   code. Set the folder with *Game data → Set game folder…* or let the editor
   find it.
+- **An installation is required for game-dependent views.** Without readable
+  game data, the editor shows an installation prompt instead of a built-in
+  game catalogue. Opening, backing up, importing, exporting and editing raw
+  save JSON remain available.
 - **Interface languages.** English and Russian are built in, and JSON packs add
   more without rebuilding (see [Interface language
   packs](#interface-language-packs)).
@@ -154,9 +169,11 @@ Windows). API documentation is available with `cargo doc --open`.
 4. Load the run in the game.
 
 To start from scratch, use *File → New save…* and save the result as `save.sv`
-in the game's save folder.
+in the game's save folder. Defaults come from the installed game; generated
+identity fields use the lower bounds of the game's random ranges and can be
+edited before saving.
 
-Editor settings (game folder, languages, automatic refresh) are stored in
+Editor settings (game folder, languages, automatic refresh, spoiler reveals) are stored in
 `cu_save_editor/config.json` in the system configuration folder: `%APPDATA%` on
 Windows, `~/.config` on Linux and `~/Library/Application Support` on macOS.
 
@@ -187,6 +204,32 @@ The inventory shows two totals:
 Missing item stats or liquid data mark a total as incomplete rather than
 guessing.
 
+**Balance containers** redistributes stored items while leaving equipped holders
+in place. Compatible contents of valid specialized containers (identified by
+the game's tag restrictions, including ammunition holders) also stay put.
+Choose one of three objectives for the remaining items: minimum carrying load,
+equal stored weight, or equal fill percentage. Favourites stay pinned unless **Move
+favourites** is selected. Capacity, per-item limits, tags and liquid weights are
+respected; item components move with their items. Existing over-capacity storage
+can be repaired when a valid distribution exists.
+
+The balancer searches for an optimum for indivisible items, not a greedy
+approximation. To keep the interface responsive, it stops after 200,000 search
+nodes (and 256 recursive assignment levels). If a limit is reached or no valid
+packing exists, it reports an error and leaves the save unchanged. Pin more
+items or choose another objective to reduce the search. Balancing can be undone
+normally.
+
+**Reload from inventory** appears in an ammunition box, magazine or weapon's
+details. It transfers compatible, non-favourite ammunition already in the
+inventory; it never creates ammunition or magazines. Loose rounds are used
+first, then rounds from boxes or spare magazines. Empty boxes and magazines
+remain in the inventory. A weapon without a magazine uses a compatible spare
+when available; reloading also chambers a round, ejects a spent casing and
+closes the action without changing the safety. Capacities, ammunition types,
+feed types and chamber encodings come from the installed game. Consumed items
+and their components are removed together; reloads can be undone.
+
 ## Platforms
 
 The editor is developed and tested on Windows. The code is portable, and
@@ -200,7 +243,7 @@ everything specific to an operating system is kept in `src/platform.rs`.
 
 On macOS, and for native Unity builds, the editor looks for the save in Unity's
 standard data folder. Reading the game's settings is not supported there yet, so
-all characters, layers and endings are shown as available.
+progress is shown as unknown, not completed.
 
 To add a platform, extend the functions in `src/platform.rs` and, for progress
 tracking, add a `PrefsStore` implementation in `src/player_prefs.rs`.
@@ -267,12 +310,12 @@ the status bar.
 
 | Path | Purpose |
 | --- | --- |
-| `src/save.rs` | Reading and writing saves (gzip or plain JSON), validation, backups. |
+| `src/save.rs`, `src/save/` | Reading and writing saves (gzip or plain JSON), validation, backups. |
 | `src/json.rs` | JSON path and number helpers. |
 | `src/schema.rs`, `src/schema/` | Field metadata, characters, layers, endings, world settings and presets. |
-| `src/catalog.rs` | Fallback item, liquid and setting catalogue. |
+| `src/catalog.rs` | Runtime item and liquid catalogue from the selected installation. |
 | `src/game_data.rs`, `src/game_data/` | Item stats from the game's assemblies and Unity assets; item and liquid effects from the game's code. |
-| `src/model.rs` | Game-accurate operations: healing, skill levels, inventory. |
+| `src/model.rs`, `src/model/` | Healing, skill levels, weights, shared placement validation and container balancing. |
 | `src/locale.rs` | Game installation discovery and language files. |
 | `src/game_info.rs` | Installed game, Unity and Steam versions; supported game version. |
 | `src/achievements.rs` | Steam achievements from Steam's binary stats cache. |
@@ -281,20 +324,15 @@ the status bar.
 | `src/diagnostics.rs` | Redaction, error log, problem reports and crash reports. |
 | `src/interface_packs.rs` | External interface language packs. |
 | `src/ui/` | The egui views: tabs, wiki, About, backups, achievements, problem reports. |
-| `src/app.rs`, `src/app/view.rs` | The application shell. |
+| `src/app.rs`, `src/app/` | Application shell, configuration, history, file operations and windows. |
 
 ### Updating for a new game version
 
-Names, descriptions, item stats and effects are read from the installed game,
-so most updates need no changes. Content the editor knows on its own lives in
-data tables:
-
-- characters, layers and hold slots: `src/schema/character.rs`;
-- endings (settings key, achievement, how to reach): `src/schema/endings.rs`;
-- world settings and presets: `src/schema/run.rs`.
-
-Add new entries there; progress tracking, spoiler hiding, the wiki and the About
-window pick them up automatically. Then set `SUPPORTED_GAME_VERSION` in
+The catalogue and schemas are runtime views of the selected installation, not
+hand-maintained game-data tables. Update readers in `src/game_data/` when the
+game changes its assembly or prefab layout; unsupported data must be reported
+as unavailable rather than replaced with older game constants. Then set
+`SUPPORTED_GAME_VERSION` in
 `src/game_info.rs` to the new version and run the tests against the game (see
 below).
 
@@ -323,11 +361,21 @@ that need the game or a save are skipped otherwise.
   a GitHub release with generated notes:
 
   ```sh
-  git tag v0.1.0
-  git push origin v0.1.0
+  git tag v0.2.0
+  git push origin v0.2.0
   ```
 
-- Actions are pinned to commit SHAs, and [Dependabot](.github/dependabot.yml)
+- Public release executables are submitted through
+  [`crazy-max/ghaction-virustotal`](https://github.com/crazy-max/ghaction-virustotal).
+  Configure a repository Actions secret named `VT_API_KEY` before creating a
+  release tag. The publish job requires the secret, submits the Windows, Linux
+  and macOS executables (not saves or game files), limits submissions to one
+  per minute to allow for large-file API requests, and adds analysis links to
+  the release notes and job summary.
+  Submission does **not** mean an analysis has completed or that a file is safe;
+  inspect the linked reports. VirusTotal shares submitted files with its
+  community. Ordinary pushes and pull requests do not submit files.
+- Actions use version tags, and [Dependabot](.github/dependabot.yml)
   opens weekly pull requests to keep them and the Cargo dependencies up to date.
 
 ## License
@@ -341,11 +389,3 @@ builds contain no game files: names, descriptions, item stats and effects are
 read at run time from the copy of the game installed on your computer. You need
 your own copy of the game, available on
 [Steam](https://store.steampowered.com/app/4576490/).
-
-## TODO
-
-- FIX the issues related to Linux; there are no games in the system, but progress is considered completely completed.
-- FIX All hardcoded parameters need to be removed, and data should be retrieved from the game. Presets, characters, endings, items. - The app is empty without the game.
-- ADD an auto‑balancer for containers to achieve optimal weight distribution.
-- Improve the performance of the Wiki with item listings when there are a large number of items.
-- ADD automatic submission for verification to VirusTotal.

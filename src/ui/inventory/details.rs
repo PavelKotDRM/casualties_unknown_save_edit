@@ -1,11 +1,9 @@
-// FIXME: ~620 lines with no module docs; `details` is a ~260-line function that renders the item
-// header, location/move controls, stats, warnings, the item fields and every component editor in
-// one body, and `liquid_editor` is another ~110 lines. Split `details` into `header`, `placement`,
-// `stats_panel` and `warnings` helpers, and move the component editors (`components_editor`,
-// `generic_component`, `liquid_editor`, `battery_editor`, `swatch_picker`/`SWATCH_COLORS`) into
-// `ui/inventory/components.rs`. `ensure_components` mutates the save document and belongs in
-// `model` next to `add_item`/`move_to_location`, which already keep `items`/`itemComponents`
-// aligned.
+//! Detailed item editor, including location, stats, warnings, and save fields.
+
+#[path = "components.rs"]
+mod components;
+#[cfg(test)]
+pub(super) use components::WATER;
 use std::collections::HashMap;
 
 use egui::{ProgressBar, RichText, Ui};
@@ -39,12 +37,108 @@ pub(super) fn details(
         .unwrap_or("")
         .to_owned();
     let def = catalog::item(&id);
+    header(ui, names, &id, def);
+    stats_panel(ui, data, index, &id, names, stats);
+    let mut loc = Location::of(&item);
+    if placement_controls(ui, data, names, stats, state, index, &mut loc) {
+        return true;
+    }
+    warnings(ui, data, &loc, &id, names, stats, index);
+    if ammunition_controls(ui, data, names, state, index) {
+        return true;
+    }
+    let Some(obj) = data
+        .get_mut("items")
+        .and_then(|a| a.get_mut(index))
+        .and_then(Value::as_object_mut)
+    else {
+        return changed;
+    };
+    card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        changed |= item_fields(ui, obj, &id, names);
+    });
+
+    // Components
+    ui.add_space(8.0);
+    ui.label(RichText::new(names.text("Components").to_string()).strong());
+    let comps = ensure_components(data, index);
+    if let Some(comps) = comps {
+        changed |= components::components_editor(ui, comps, def, names);
+    }
+    changed
+}
+
+fn ammunition_controls(
+    ui: &mut Ui,
+    data: &mut Value,
+    names: Names,
+    state: &mut InventoryState,
+    index: usize,
+) -> bool {
+    let status = match model::ammunition_status(data, index) {
+        Ok(Some(status)) => status,
+        Ok(None) => return false,
+        Err(error) => {
+            ui.colored_label(colors::WARN, names.text(&error).into_owned());
+            return false;
+        }
+    };
+    let mut changed = false;
+    card(ui, |ui| {
+        ui.strong(names.text("Ammunition"));
+        let (rounds, capacity) = match status {
+            model::AmmunitionStatus::Round => {
+                ui.weak(names.text("Select a magazine or weapon to reload it."));
+                return;
+            }
+            model::AmmunitionStatus::Magazine { rounds, capacity } => (rounds, capacity),
+            model::AmmunitionStatus::Weapon {
+                rounds,
+                capacity,
+                magazine,
+                chamber,
+            } => {
+                let chamber = match chamber {
+                    model::ChamberState::Round => "Live round",
+                    model::ChamberState::Casing => "Spent casing",
+                    model::ChamberState::Empty => "No round",
+                };
+                ui.label(format!(
+                    "{}: {}",
+                    names.text("Chamber"),
+                    names.text(chamber)
+                ));
+                if !magazine {
+                    ui.weak(names.text("No magazine inserted"));
+                }
+                (rounds, capacity)
+            }
+        };
+        ui.add(
+            ProgressBar::new(rounds as f32 / capacity as f32)
+                .text(format!("{}: {rounds} / {capacity}", names.text("Rounds"))),
+        );
+        if ui.button(names.text("Reload from inventory"))
+            .on_hover_text(names.text("Uses compatible non-favourite ammunition. Inserts a magazine when needed and chambers a round. Safety is unchanged."))
+            .clicked()
+        {
+            match model::reload_ammunition(data, index) {
+                Ok(index) => { state.selected = Some(index); changed = true; }
+                Err(error) => { crate::ui::operation_result(ui, Err(error)); }
+            }
+        }
+    });
+    changed
+}
+
+fn header(ui: &mut Ui, names: Names, id: &str, def: Option<&catalog::ItemDef>) {
     ui.heading(format!(
         "{} {}",
         def.map_or("❓", |d| category_icon(d.category)),
-        names.item(&id)
+        names.item(id)
     ));
-    if let Some(d) = names.item_description(&id) {
+    if let Some(d) = names.item_description(id) {
         ui.label(RichText::new(d).italics());
     }
     if let Some(d) = def {
@@ -64,8 +158,18 @@ pub(super) fn details(
             },
         ));
     }
+}
+
+fn stats_panel(
+    ui: &mut Ui,
+    data: &Value,
+    index: usize,
+    id: &str,
+    names: Names,
+    stats: &HashMap<String, ItemStats>,
+) {
     let weights = model::item_weights(data, index, stats);
-    if let Some(item_stats) = stats.get(&id) {
+    if let Some(item_stats) = stats.get(id) {
         if let Some(game_weight) = weights.game {
             ui.weak(format!(
                 "{} {:.2} u{}{}",
@@ -156,22 +260,39 @@ pub(super) fn details(
         );
     }
     ui.add_space(6.0);
+}
 
+fn placement_controls(
+    ui: &mut Ui,
+    data: &mut Value,
+    names: Names,
+    stats: &HashMap<String, ItemStats>,
+    state: &mut InventoryState,
+    index: usize,
+    loc: &mut Location,
+) -> bool {
+    let mut changed = false;
+    let holder = holder_rules(
+        items(data)
+            .get(index)
+            .and_then(|item| item["id"].as_str())
+            .unwrap_or(""),
+        stats,
+    );
     // Location (moving changes the index).
-    let mut loc = Location::of(&item);
     ui.horizontal(|ui| {
         row_label(ui, names, "Location");
         if location_combo(
             ui,
             "item_location",
             data,
-            &mut loc,
-            holder_rules(&id, stats),
+            loc,
+            holder,
             true,
             names,
             stats,
             index,
-        ) && let Some(n) = model::move_to_location(data, index, &loc)
+        ) && let Some(n) = model::move_to_location(data, index, loc)
         {
             state.selected = Some(n);
             changed = true;
@@ -180,11 +301,23 @@ pub(super) fn details(
     if changed {
         return true;
     }
-    let expected_wear_slot = item_wear_slot(&id, stats);
+    changed
+}
+
+fn warnings(
+    ui: &mut Ui,
+    data: &Value,
+    loc: &Location,
+    id: &str,
+    names: Names,
+    stats: &HashMap<String, ItemStats>,
+    index: usize,
+) {
+    let expected_wear_slot = item_wear_slot(id, stats);
     let is_holder = model::group_items(data)
         .iter()
-        .any(|g| g.location == loc && g.indices.first() == Some(&index));
-    let holder = holder_rules(&id, stats);
+        .any(|g| g.location == *loc && g.indices.first() == Some(&index));
+    let holder = holder_rules(id, stats);
     if let Location::Slot(_) = loc
         && is_holder
         && holder.not_holdable
@@ -198,19 +331,19 @@ pub(super) fn details(
     } else if let Location::Slot(slot) = loc
         && is_holder
         && holder.hands_only
-        && !is_hand_slot(slot)
+        && !is_hand_slot(*slot)
     {
         ui.colored_label(
             colors::WARN,
             names.text("⚠ The game only lets this item be held in hands; move it to a hand slot."),
         );
     }
-    if let Location::Worn(w) = &loc
+    if let Location::Worn(w) = loc
         && !w.is_empty()
         && expected_wear_slot != Some(w.as_str())
         && model::group_items(data)
             .iter()
-            .any(|g| g.location == loc && g.indices.first() == Some(&index))
+            .any(|g| g.location == *loc && g.indices.first() == Some(&index))
     {
         ui.colored_label(
             colors::WARN,
@@ -220,7 +353,7 @@ pub(super) fn details(
                 .replace("{actual}", w),
         );
     }
-    if let Location::Worn(w) = &loc
+    if let Location::Worn(w) = loc
         && is_holder
         && expected_wear_slot == Some(w.as_str())
         && let Some(limb) = missing_wear_limb(data, holder)
@@ -235,7 +368,7 @@ pub(super) fn details(
         );
     }
     if let Location::Slot(slot) = loc
-        && usize::try_from(slot).map_or(true, |s| s >= crate::schema::HOLD_SLOTS.len())
+        && usize::try_from(*slot).map_or(true, |s| s >= crate::schema::HOLD_SLOTS.len())
     {
         ui.colored_label(
             colors::BAD,
@@ -249,7 +382,7 @@ pub(super) fn details(
         .and_then(|item| item.get("condition"))
         .and_then(Value::as_f64);
     if condition.is_some_and(|c| c <= 0.0)
-        && stats.get(&id).is_some_and(|s| s.destroy_at_zero_condition)
+        && stats.get(id).is_some_and(|s| s.destroy_at_zero_condition)
     {
         ui.colored_label(
             colors::BAD,
@@ -258,27 +391,6 @@ pub(super) fn details(
             ),
         );
     }
-
-    let Some(obj) = data
-        .get_mut("items")
-        .and_then(|a| a.get_mut(index))
-        .and_then(Value::as_object_mut)
-    else {
-        return changed;
-    };
-    card(ui, |ui| {
-        ui.set_width(ui.available_width());
-        changed |= item_fields(ui, obj, &id, names);
-    });
-
-    // Components
-    ui.add_space(8.0);
-    ui.label(RichText::new(names.text("Components").to_string()).strong());
-    let comps = ensure_components(data, index);
-    if let Some(comps) = comps {
-        changed |= components_editor(ui, comps, def, names);
-    }
-    changed
 }
 
 fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str, names: Names) -> bool {
@@ -340,7 +452,7 @@ fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str, names: Names
     if let Some(slot) = obj.get_mut("swatch") {
         ui.horizontal(|ui| {
             row_label(ui, names, "Swatch");
-            changed |= swatch_picker(ui, slot);
+            changed |= components::swatch_picker(ui, slot);
         })
         .response
         .on_hover_text(names.text("Colour variant index"));
@@ -372,272 +484,4 @@ fn ensure_components(data: &mut Value, index: usize) -> Option<&mut Map<String, 
         *slot = json!({});
     }
     slot.as_object_mut()
-}
-
-/// `Item.ColorSwatches` from the game; `swatch` indexes this table.
-const SWATCH_COLORS: [[f32; 3]; 8] = [
-    [1.0, 1.0, 1.0],
-    [0.5, 0.5, 0.5],
-    [0.28, 1.0, 0.28],
-    [0.96, 0.67, 0.17],
-    [0.9, 0.333, 1.0],
-    [0.4, 0.333, 1.0],
-    [0.2, 1.0, 1.0],
-    [1.0, 0.988, 0.4],
-];
-
-fn swatch_picker(ui: &mut Ui, value: &mut Value) -> bool {
-    let current = value.as_i64();
-    let mut changed = false;
-    for (index, [r, g, b]) in SWATCH_COLORS.iter().enumerate() {
-        let color =
-            egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8);
-        let selected = current == Some(index as i64);
-        let text = RichText::new(if selected { "■" } else { "□" })
-            .color(color)
-            .size(18.0);
-        if ui.selectable_label(selected, text).clicked() && !selected {
-            *value = json!(index);
-            changed = true;
-        }
-    }
-    if !current.is_some_and(|c| (0..SWATCH_COLORS.len() as i64).contains(&c)) {
-        ui.colored_label(colors::BAD, format!("⚠ {value}"));
-    }
-    changed
-}
-
-pub(super) const WATER: &str =
-    "WaterContainerItem, Assembly-CSharp, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null";
-
-fn components_editor(
-    ui: &mut Ui,
-    comps: &mut Map<String, Value>,
-    def: Option<&catalog::ItemDef>,
-    names: Names,
-) -> bool {
-    let mut changed = false;
-    if comps.is_empty() {
-        ui.weak(
-            names
-                .text("No saved component state (the game uses the item's defaults).")
-                .to_string(),
-        );
-    }
-    let keys: Vec<String> = comps.keys().cloned().collect();
-    let mut remove = None;
-    for key in keys {
-        let short = component_short_name(&key).to_owned();
-        let Some(value) = comps.get_mut(&key) else {
-            continue;
-        };
-        card(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(&short).strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .small_button("🗑")
-                        .on_hover_text(
-                            names
-                                .text("Remove this component (use defaults)")
-                                .to_string(),
-                        )
-                        .clicked()
-                    {
-                        remove = Some(key.clone());
-                    }
-                });
-            });
-            let Some(obj) = value.as_object_mut() else {
-                changed |= raw::subtree(ui, &key, &short, value);
-                return;
-            };
-            changed |= match short.as_str() {
-                "WaterContainerItem" => liquid_editor(ui, obj, def, names),
-                "BatteryItem" => battery_editor(ui, obj, names),
-                _ => generic_component(ui, &key, obj),
-            };
-        });
-    }
-    if let Some(k) = remove {
-        comps.shift_remove(&k);
-        changed = true;
-    }
-    if def.is_some_and(|d| d.capacity > 0.0)
-        && !comps.contains_key(WATER)
-        && ui
-            .button(format!("💧 {}", names.text("Add liquid contents")))
-            .clicked()
-    {
-        comps.insert(WATER.into(), json!({"stack": []}));
-        changed = true;
-    }
-    changed
-}
-
-fn generic_component(ui: &mut Ui, key: &str, obj: &mut Map<String, Value>) -> bool {
-    let mut changed = false;
-    let keys: Vec<String> = obj.keys().cloned().collect();
-    if keys.is_empty() {
-        ui.weak("(empty)");
-    }
-    for k in keys {
-        let Some(v) = obj.get_mut(&k) else { continue };
-        changed |= if v.is_object() || v.is_array() {
-            raw::subtree(ui, &format!("{key}/{k}"), &k, v)
-        } else {
-            generic_row(ui, &k, v)
-        };
-    }
-    changed
-}
-
-fn liquid_editor(
-    ui: &mut Ui,
-    obj: &mut Map<String, Value>,
-    def: Option<&catalog::ItemDef>,
-    names: Names,
-) -> bool {
-    let mut changed = false;
-    let capacity = def.map_or(0.0, |d| d.capacity as f64);
-    let Some(Value::Array(stack)) = obj.get_mut("stack") else {
-        return generic_component(ui, "liquid", obj);
-    };
-    let total: f64 = stack
-        .iter()
-        .filter_map(|s| s.get("amount").and_then(Value::as_f64))
-        .sum();
-    if capacity > 0.0 {
-        let t = (total / capacity) as f32;
-        ui.add(
-            ProgressBar::new(t.min(1.0))
-                .fill(if t > 1.0 {
-                    colors::WARN
-                } else {
-                    colors::NEUTRAL
-                })
-                .text(format!("{} / {} ml", fmt_num(total), fmt_num(capacity))),
-        );
-    } else {
-        ui.label(format!("Total: {} ml", fmt_num(total)));
-    }
-    let mut remove = None;
-    for (i, entry) in stack.iter_mut().enumerate() {
-        let Some(e) = entry.as_object_mut() else {
-            continue;
-        };
-        ui.horizontal(|ui| {
-            let mut liquid = get_str(e, "liquidId").unwrap_or("").to_owned();
-            egui::ComboBox::from_id_salt(("liquid", i))
-                .selected_text(names.liquid(&liquid))
-                .width(180.0)
-                .height(400.0)
-                .show_ui(ui, |ui| {
-                    for l in catalog::LIQUIDS {
-                        ui.selectable_value(
-                            &mut liquid,
-                            (*l).to_owned(),
-                            format!("{} ({l})", names.liquid(l)),
-                        );
-                    }
-                });
-            if Some(liquid.as_str()) != get_str(e, "liquidId") {
-                e.insert("liquidId".into(), Value::String(liquid));
-                changed = true;
-            }
-            if let Some(slot) = e.get_mut("amount") {
-                let mut v = slot.as_f64().unwrap_or(0.0);
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut v)
-                            .range(0.0..=f64::MAX)
-                            .speed(1.0)
-                            .suffix(" ml")
-                            .max_decimals(2),
-                    )
-                    .changed()
-                {
-                    json::set_number_preserving(slot, v);
-                    changed = true;
-                }
-            }
-            if ui.small_button("🗑").clicked() {
-                remove = Some(i);
-            }
-        });
-    }
-    if let Some(i) = remove {
-        stack.remove(i);
-        changed = true;
-    }
-    ui.horizontal(|ui| {
-        if ui
-            .button(format!("➕ {}", names.text("Add liquid")))
-            .clicked()
-        {
-            stack.push(json!({"liquidId": "water", "amount": 0.0}));
-            changed = true;
-        }
-        if capacity > 0.0
-            && total > 0.0
-            && ui
-                .button(names.text("Fill to capacity").to_string())
-                .on_hover_text(names.text("Scales all liquids proportionally").to_string())
-                .clicked()
-        {
-            let k = capacity / total;
-            for e in stack.iter_mut().filter_map(Value::as_object_mut) {
-                if let Some(a) = get_f64(e, "amount") {
-                    json::set_f64(e, "amount", a * k);
-                }
-            }
-            changed = true;
-        }
-        if !stack.is_empty() && ui.button(names.text("Empty").to_string()).clicked() {
-            stack.clear();
-            changed = true;
-        }
-    });
-    changed
-}
-
-fn battery_editor(ui: &mut Ui, obj: &mut Map<String, Value>, names: Names) -> bool {
-    let mut changed = false;
-    if let Some(slot) = obj.get_mut("maxCharge") {
-        ui.horizontal(|ui| {
-            row_label(ui, names, "Max charge");
-            changed |= number_editor(ui, slot, 1.0);
-        });
-    }
-    if let Some(Value::String(kind)) = obj.get_mut("batteryType") {
-        ui.horizontal(|ui| {
-            row_label(ui, names, "Battery");
-            let before = kind.clone();
-            egui::ComboBox::from_id_salt("battery_type")
-                .selected_text(if kind.is_empty() {
-                    "(none)"
-                } else {
-                    kind.as_str()
-                })
-                .show_ui(ui, |ui| {
-                    for (v, t) in [
-                        ("", "(none)"),
-                        ("smallbattery", "Small battery"),
-                        ("mediumbattery", "Medium battery"),
-                    ] {
-                        ui.selectable_value(kind, v.to_owned(), t);
-                    }
-                });
-            changed |= *kind != before;
-        });
-    }
-    let known = |k: &str| matches!(k, "maxCharge" | "batteryType");
-    let keys: Vec<String> = obj.keys().filter(|k| !known(k)).cloned().collect();
-    for k in keys {
-        if let Some(v) = obj.get_mut(&k) {
-            changed |= generic_row(ui, &k, v);
-        }
-    }
-    changed
 }

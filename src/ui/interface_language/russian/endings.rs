@@ -8,6 +8,30 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Not discovered yet." => Some("Ещё не открыта."),
         "Discovered" => Some("Открыта"),
         "Steam achievement" => Some("Достижение Steam"),
+        "{found} discovered" => Some("открыто: {found}"),
+        "Undiscovered ending" => Some("Неоткрытая концовка"),
+        "Hint" => Some("Подсказка"),
+        "Ending name" => Some("Название концовки"),
+        "Ending status" => Some("Статус концовки"),
+        "How to reach it" => Some("Как её получить"),
+        "Total layers: {total}" => Some("Всего слоёв: {total}"),
+        "Total endings: {total}" => Some("Всего концовок: {total}"),
+        "Reveal total layers" => Some("Показать число слоёв"),
+        "Reveal total endings" => Some("Показать число концовок"),
+        "Hide layer total" => Some("Скрыть число слоёв"),
+        "Hide ending total" => Some("Скрыть число концовок"),
+        "Reveal next hint" => Some("Показать следующую подсказку"),
+        "Reveal a hint for another ending" => Some("Подсказка для другой концовки"),
+        "Hide ending hints" => Some("Скрыть подсказки концовок"),
+        "No other hidden endings are available." => Some("Других скрытых концовок нет."),
+        "Reveal one more available detail from the game or Steam. This choice is remembered." => {
+            Some("Показать ещё одну доступную подробность из игры или Steam. Выбор сохраняется.")
+        }
+        "Ways a run can end successfully. Undiscovered endings and their total stay hidden unless you explicitly reveal them. Hints reveal one available detail at a time." => {
+            Some(
+                "Способы успешно завершить забег. Неоткрытые концовки и их число скрыты, пока вы явно не запросите их показ. Каждый запрос открывает одну доступную подробность.",
+            )
+        }
         "The game marks an ending again on start if you have its Steam achievement." => {
             Some("Если у вас есть достижение Steam за концовку, игра снова отметит её при запуске.")
         }

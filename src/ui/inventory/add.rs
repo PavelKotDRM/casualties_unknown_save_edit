@@ -1,10 +1,4 @@
-// FIXME: ~750 lines with no module docs; `add_window` is ~150 lines and `destination_status`
-// ~215 lines of nested `if`/`match` deciding whether an item fits a destination (holder rules, wear
-// slot, container tags, weight, remaining capacity). Extract the validation into a UI-free
-// `model::placement::check_destination(data, stats, item, location) -> Result<(), Rejection>`
-// enum, map `Rejection` to text in one `fn rejection_text(names, Rejection)`, and have both
-// `destination_status` and `destination_status_for_move` call it. Move the ~230 lines of tests
-// with the extracted logic so they no longer need to construct egui `Names`.
+//! Item catalogue window and user-facing placement feedback.
 use std::collections::HashMap;
 
 use egui::{RichText, Ui};
@@ -12,8 +6,7 @@ use serde_json::{Value, json};
 
 use super::{
     InventoryState, Names, category_icon, colors, default_location, holder_location_allowed,
-    holder_rules, item_wear_slot, location_choices, location_icon, location_name,
-    missing_wear_limb, row_label,
+    holder_rules, item_wear_slot, location_choices, location_icon, location_name, row_label,
 };
 use crate::catalog;
 use crate::game_data::ItemStats;
@@ -150,6 +143,9 @@ pub(super) fn add_window(
                     destination_status(data, loc, state.add_id.trim(), stats, names, None);
                 ui.colored_label(color, description);
             }
+            if let Some(error) = &state.add_error {
+                ui.colored_label(colors::BAD, error);
+            }
             let can_add = state.add_location.as_ref().is_some_and(|location| {
                 destination_status(data, location, state.add_id.trim(), stats, names, None).2
             });
@@ -213,10 +209,9 @@ pub(super) fn destination_status_for_move(
     names: Names,
 ) -> (String, egui::Color32, bool) {
     let Some(item) = super::items(data).get(item_index) else {
-        return (
-            names.text("Item data unavailable").to_string(),
-            colors::WARN,
-            false,
+        return rejection_status(
+            names,
+            crate::model::placement::Rejection::ItemDataUnavailable,
         );
     };
     if Location::of(item) == *location {
@@ -226,58 +221,13 @@ pub(super) fn destination_status_for_move(
             true,
         );
     }
-    if !model::group_items(data)
-        .iter()
-        .any(|group| &group.location == location)
-    {
-        let holder = item
-            .get("id")
-            .and_then(Value::as_str)
-            .map(|id| holder_rules(id, stats))
-            .unwrap_or_default();
-        if !holder_location_allowed(data, location, holder) {
-            return (
-                not_holdable_text(data, location, holder, names),
-                colors::BAD,
-                false,
-            );
-        }
-        return (
-            names.text("Empty location").to_string(),
-            colors::ACCENT,
-            true,
-        );
-    }
     let Some(item_id) = item.get("id").and_then(Value::as_str) else {
-        return (
-            names.text("Item data unavailable").to_string(),
-            colors::WARN,
-            false,
+        return rejection_status(
+            names,
+            crate::model::placement::Rejection::ItemDataUnavailable,
         );
     };
     destination_status(data, location, item_id, stats, names, Some(item_index))
-}
-
-fn not_holdable_text(
-    data: &Value,
-    location: &Location,
-    holder: super::HolderRules,
-    names: Names,
-) -> String {
-    if let Location::Worn(_) = location
-        && let Some(limb) = missing_wear_limb(data, holder)
-    {
-        return names
-            .text("Cannot be worn: {limb} is dismembered")
-            .replace("{limb}", &names.limb(limb));
-    }
-    match location {
-        Location::Slot(_) if holder.not_holdable => names
-            .text("Clothing can't be held; wear it or store it in a container")
-            .into_owned(),
-        Location::Slot(_) => names.text("Can only be held in hands").into_owned(),
-        Location::Worn(_) => names.text("Item cannot be worn here").into_owned(),
-    }
 }
 
 fn destination_status(
@@ -288,211 +238,110 @@ fn destination_status(
     names: Names,
     item_index: Option<usize>,
 ) -> (String, egui::Color32, bool) {
-    let Some(group) = model::group_items(data)
-        .into_iter()
-        .find(|group| &group.location == location)
-    else {
-        let holder = holder_rules(item_id, stats);
-        if !holder_location_allowed(data, location, holder) {
-            return (
-                not_holdable_text(data, location, holder, names),
-                colors::BAD,
-                false,
-            );
-        }
-        return (
-            names.text("New item will be held/worn").to_string(),
+    match crate::model::placement::check_destination(data, stats, item_id, location, item_index) {
+        Ok(destination) => destination_status_text(names, destination, item_index.is_none()),
+        Err(rejection) => rejection_status(names, rejection),
+    }
+}
+
+fn destination_status_text(
+    names: Names,
+    destination: crate::model::placement::Destination,
+    adding: bool,
+) -> (String, egui::Color32, bool) {
+    match destination {
+        crate::model::placement::Destination::Empty => (
+            names
+                .text(if adding {
+                    "New item will be held/worn"
+                } else {
+                    "Empty location"
+                })
+                .to_string(),
             colors::ACCENT,
             true,
-        );
-    };
-    let Some(&root_index) = group.indices.first() else {
-        return (
-            names.text("Container data unavailable").to_string(),
-            colors::WARN,
-            false,
-        );
-    };
-    let Some(root_id) = super::items(data)
-        .get(root_index)
-        .and_then(|item| item.get("id"))
-        .and_then(Value::as_str)
-    else {
-        return (
-            names.text("Container data unavailable").to_string(),
-            colors::WARN,
-            false,
-        );
-    };
-    let root_name = names.item(root_id);
-    let moving_filled_container = item_index.is_some_and(|index| {
-        model::group_items(data)
-            .iter()
-            .any(|g| g.indices.len() > 1 && g.indices.first() == Some(&index))
-    });
-    if moving_filled_container {
-        return (
+        ),
+        crate::model::placement::Destination::Container {
+            holder_id,
+            remaining,
+            capacity,
+        } => (
             names
-                .text("A container with items can't be stored in another container")
-                .to_string(),
-            colors::BAD,
-            false,
-        );
+                .text("Inside {item}: {remaining}/{capacity} u left")
+                .replace("{item}", &names.item(&holder_id))
+                .replace("{remaining}", &format!("{remaining:.1}"))
+                .replace("{capacity}", &format!("{capacity:.1}")),
+            colors::ACCENT,
+            true,
+        ),
     }
-    if let Some(container_stats) = stats.get(root_id) {
-        let Some(capacity) = container_stats.container_capacity else {
-            let known_non_container =
-                catalog::item(root_id).is_some_and(|item| item.category != "container");
-            let status = if known_non_container {
-                names
-                    .text("Occupied by {item} (not a container)")
-                    .replace("{item}", &root_name)
-            } else {
-                names
-                    .text("Container data unavailable for {item}")
-                    .replace("{item}", &root_name)
-            };
-            return (status, colors::WARN, false);
-        };
-        let Some(max_item_weight) = container_stats
-            .container_max_item_weight
-            .filter(|weight| weight.is_finite() && *weight >= 0.0)
-        else {
-            return (
-                names
-                    .text("Inside {item}: weight limits unavailable")
-                    .replace("{item}", &root_name),
-                colors::WARN,
-                false,
-            );
-        };
-        let Some(restrictions) = container_stats.container_tag_restriction.as_ref() else {
-            return (
-                names
-                    .text("Inside {item}: restrictions unavailable")
-                    .replace("{item}", &root_name),
-                colors::WARN,
-                false,
-            );
-        };
-        if !restrictions.is_empty() {
-            let Some(item_stats) = stats.get(item_id) else {
-                return (
-                    names
-                        .text("Cannot check item type for {item}")
-                        .replace("{item}", &root_name),
-                    colors::WARN,
-                    false,
-                );
-            };
-            if container_stats.accepts_item(item_stats) == Some(false) {
-                return (
-                    names
-                        .text("Item type not accepted by {item}")
-                        .replace("{item}", &root_name),
-                    colors::BAD,
-                    false,
-                );
-            }
-        }
-        let item_weight = if let Some(index) = item_index {
-            let weights = model::item_weights(data, index, stats);
-            weights.game_complete.then_some(weights.game).flatten()
-        } else {
-            stats.get(item_id).and_then(|item_stats| {
-                item_stats
-                    .liquid_capacity
-                    .is_none()
-                    .then(|| item_stats.total_weight(1.0))
-            })
-        };
-        let Some(item_weight) = item_weight.filter(|weight| weight.is_finite() && *weight >= 0.0)
-        else {
-            return (
-                names
-                    .text("Cannot verify item weight for {item}")
-                    .replace("{item}", &root_name),
-                colors::WARN,
-                false,
-            );
-        };
-        if item_weight > max_item_weight + f32::EPSILON {
-            return (
-                names
-                    .text("Item exceeds max weight per item for {item}")
-                    .replace("{item}", &root_name),
-                colors::BAD,
-                false,
-            );
-        }
-        let Some(space) =
-            model::container_space(data, root_index, stats).filter(|space| space.complete)
-        else {
-            return (
-                names
-                    .text("Inside {item}: capacity unavailable")
-                    .replace("{item}", &root_name),
-                colors::WARN,
-                false,
-            );
-        };
-        let (text, color, can_add) = if space.over_capacity > 0.0 {
-            (
-                names
-                    .text("Inside {item}: over capacity")
-                    .replace("{item}", &root_name),
-                colors::BAD,
-                false,
-            )
-        } else if space.remaining <= f32::EPSILON {
-            (
-                names
-                    .text("Inside {item}: full")
-                    .replace("{item}", &root_name),
-                colors::BAD,
-                false,
-            )
-        } else if item_weight > space.remaining + f32::EPSILON {
-            (
-                names
-                    .text("Not enough remaining capacity in {item}")
-                    .replace("{item}", &root_name),
-                colors::BAD,
-                false,
-            )
-        } else {
-            (
-                names
-                    .text("Inside {item}: {remaining}/{capacity} u left")
-                    .replace("{item}", &root_name)
-                    .replace("{remaining}", &format!("{:.1}", space.remaining))
-                    .replace("{capacity}", &format!("{:.1}", capacity)),
-                colors::ACCENT,
-                true,
-            )
-        };
-        return (text, color, can_add);
-    }
+}
 
-    let known_non_container = stats.contains_key(root_id)
-        || catalog::item(root_id).is_some_and(|item| item.category != "container");
-    if known_non_container {
-        (
-            names
-                .text("Occupied by {item} (not a container)")
-                .replace("{item}", &root_name),
-            colors::WARN,
-            false,
-        )
+fn rejection_status(
+    names: Names,
+    rejection: crate::model::placement::Rejection,
+) -> (String, egui::Color32, bool) {
+    use crate::model::placement::Rejection;
+
+    let text = match &rejection {
+        Rejection::ItemDataUnavailable => names.text("Item data unavailable").into_owned(),
+        Rejection::ContainerDataUnavailable(item) if item.is_empty() => {
+            names.text("Container data unavailable").into_owned()
+        }
+        Rejection::ContainerDataUnavailable(item) => names
+            .text("Container data unavailable for {item}")
+            .replace("{item}", &names.item(item)),
+        Rejection::OccupiedByNonContainer(item) => names
+            .text("Occupied by {item} (not a container)")
+            .replace("{item}", &names.item(item)),
+        Rejection::MissingWearLimb(limb) => names
+            .text("Cannot be worn: {limb} is dismembered")
+            .replace("{limb}", &names.limb(*limb)),
+        Rejection::ClothingNotHoldable => names
+            .text("Clothing can't be held; wear it or store it in a container")
+            .into_owned(),
+        Rejection::HandsOnly => names.text("Can only be held in hands").into_owned(),
+        Rejection::CannotWear => names.text("Item cannot be worn here").into_owned(),
+        Rejection::FilledContainer => names
+            .text("A container with items can't be stored in another container")
+            .into_owned(),
+        Rejection::WeightLimitUnavailable(item) => names
+            .text("Inside {item}: weight limits unavailable")
+            .replace("{item}", &names.item(item)),
+        Rejection::RestrictionsUnavailable(item) => names
+            .text("Inside {item}: restrictions unavailable")
+            .replace("{item}", &names.item(item)),
+        Rejection::ItemTypeUnavailable(item) => names
+            .text("Cannot check item type for {item}")
+            .replace("{item}", &names.item(item)),
+        Rejection::ItemTypeNotAccepted(item) => names
+            .text("Item type not accepted by {item}")
+            .replace("{item}", &names.item(item)),
+        Rejection::ItemWeightUnavailable(item) => names
+            .text("Cannot verify item weight for {item}")
+            .replace("{item}", &names.item(item)),
+        Rejection::ItemTooHeavy(item) => names
+            .text("Item exceeds max weight per item for {item}")
+            .replace("{item}", &names.item(item)),
+        Rejection::CapacityUnavailable(item) => names
+            .text("Inside {item}: capacity unavailable")
+            .replace("{item}", &names.item(item)),
+        Rejection::OverCapacity(item) => names
+            .text("Inside {item}: over capacity")
+            .replace("{item}", &names.item(item)),
+        Rejection::Full(item) => names
+            .text("Inside {item}: full")
+            .replace("{item}", &names.item(item)),
+        Rejection::NotEnoughCapacity(item) => names
+            .text("Not enough remaining capacity in {item}")
+            .replace("{item}", &names.item(item)),
+    };
+    let color = if rejection.is_metadata_warning() {
+        colors::WARN
     } else {
-        (
-            names
-                .text("Container data unavailable for {item}")
-                .replace("{item}", &root_name),
-            colors::WARN,
-            false,
-        )
-    }
+        colors::BAD
+    };
+    (text, color, false)
 }
 
 pub(super) fn do_add(
@@ -500,6 +349,16 @@ pub(super) fn do_add(
     state: &mut InventoryState,
     stats: &HashMap<String, ItemStats>,
     names: Names,
+) -> bool {
+    do_add_with(data, state, stats, names, model::new_item)
+}
+
+fn do_add_with(
+    data: &mut Value,
+    state: &mut InventoryState,
+    stats: &HashMap<String, ItemStats>,
+    names: Names,
+    create: impl FnOnce(&str, &Location) -> Result<Value, String>,
 ) -> bool {
     let holder = holder_rules(state.add_id.trim(), stats);
     let mut loc = state
@@ -512,14 +371,42 @@ pub(super) fn do_add(
     if !destination_status(data, &loc, state.add_id.trim(), stats, names, None).2 {
         return false;
     }
-    let item = model::new_item(state.add_id.trim(), &loc);
+    let item = match create(state.add_id.trim(), &loc) {
+        Ok(item) => item,
+        Err(error) => {
+            state.add_error = Some(error);
+            return false;
+        }
+    };
+    if data.get("items").and_then(Value::as_array).is_none() {
+        state.add_error = Some("This save has no items array.".to_owned());
+        return false;
+    }
     match model::add_item(data, item, json!({})) {
         Some(i) => {
             state.selected = Some(i);
+            state.add_error = None;
             true
         }
-        None => false,
+        None => {
+            state.add_error = Some("This save has no items array.".to_owned());
+            false
+        }
     }
+}
+
+#[cfg(test)]
+pub(super) fn do_add_fixture(
+    data: &mut Value,
+    state: &mut InventoryState,
+    stats: &HashMap<String, ItemStats>,
+    names: Names,
+) -> bool {
+    do_add_with(data, state, stats, names, |id, location| {
+        let mut item = json!({"id": id, "condition": 1.0});
+        location.apply(&mut item);
+        Ok(item)
+    })
 }
 
 #[cfg(test)]
@@ -559,6 +446,28 @@ mod tests {
     }
 
     #[test]
+    fn constructor_failure_is_visible_and_does_not_change_the_inventory() {
+        let mut data = json!({"items": []});
+        let original = data.clone();
+        let mut state = InventoryState {
+            add_id: "item".to_owned(),
+            ..Default::default()
+        };
+        let stats = HashMap::new();
+        assert!(!do_add_with(
+            &mut data,
+            &mut state,
+            &stats,
+            names(),
+            |_, _| { Err("Missing item defaults".to_owned()) }
+        ));
+        assert_eq!(state.add_error.as_deref(), Some("Missing item defaults"));
+        assert_eq!(data, original);
+        assert!(do_add_fixture(&mut data, &mut state, &stats, names()));
+        assert!(state.add_error.is_none());
+    }
+
+    #[test]
     fn adding_to_a_container_rejects_items_without_a_matching_tag() {
         let data = json!({
             "items": [{"id": "ammo_case", "slot": 0}]
@@ -579,7 +488,7 @@ mod tests {
         };
         let mut data = data;
 
-        assert!(!do_add(&mut data, &mut state, &stats, names()));
+        assert!(!do_add_fixture(&mut data, &mut state, &stats, names()));
         assert_eq!(data["items"].as_array().unwrap().len(), 1);
         let status =
             destination_status(&data, &Location::Slot(0), "syringe", &stats, names(), None);
@@ -606,7 +515,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(do_add(&mut data, &mut state, &stats, names()));
+        assert!(do_add_fixture(&mut data, &mut state, &stats, names()));
         assert_eq!(data["items"].as_array().unwrap().len(), 2);
     }
 
@@ -684,7 +593,7 @@ mod tests {
             add_location: Some(Location::Slot(1)),
             ..Default::default()
         };
-        assert!(do_add(&mut data, &mut state, &stats, names()));
+        assert!(do_add_fixture(&mut data, &mut state, &stats, names()));
         assert!(!destination_status_for_move(&data, &Location::Slot(4), 0, &stats, names()).2);
     }
 
@@ -732,12 +641,20 @@ mod tests {
             add_id: "coat".to_owned(),
             ..Default::default()
         };
-        assert!(do_add(&mut data, &mut state, &stats, names()));
+        assert!(do_add_fixture(&mut data, &mut state, &stats, names()));
         assert_eq!(data["items"][1]["wearSlot"], "torso");
     }
 
     #[test]
     fn clothing_cannot_be_worn_on_a_dismembered_limb() {
+        let _metadata =
+            crate::game_data::runtime::scoped_for_test(crate::game_data::metadata::Metadata {
+                limbs: vec![crate::schema::LimbDef {
+                    object: "Head",
+                    name: "Head",
+                }],
+                ..Default::default()
+            });
         let cap = ItemStats {
             wearable: true,
             wear_slot: Some("head".to_owned()),

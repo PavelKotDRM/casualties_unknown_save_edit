@@ -155,6 +155,9 @@ impl WineRegistry {
             .map(|b| u8::from_str_radix(b.trim(), 16))
             .collect::<Result<_, _>>()
             .ok()?;
+        if bytes.len() != 8 {
+            return None;
+        }
         let mut le = [0u8; 8];
         for (slot, byte) in le.iter_mut().zip(bytes) {
             *slot = byte;
@@ -177,7 +180,9 @@ impl PrefsStore for WineRegistry {
             if line.starts_with('[') {
                 in_section = Self::is_section(line);
             } else if in_section && let Some(data) = line.strip_prefix(&prefix) {
-                return Ok(Self::parse_value(data.trim()));
+                return Self::parse_value(data.trim()).map(Some).ok_or_else(|| {
+                    format!("{key}: invalid integer preference in {}", self.location())
+                });
             }
         }
         Ok(None)
@@ -247,7 +252,7 @@ pub const DEEPEST_LAYER_KEY: &str = "deepestlayer";
 
 /// Progress recorded by the game: unlocked characters, layers reached and
 /// endings discovered.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GameProgress {
     /// `won[i]` is `true` once a run was won as character `i`.
     won: Vec<bool>,
@@ -295,19 +300,15 @@ impl GameProgress {
         self
     }
 
-    /// Whether ending `index` of [`schema::ENDINGS`] was reached. Unknown
-    /// state is treated as discovered, like character unlocks.
+    /// Whether ending `index` of [`schema::ENDINGS`] is known to be reached.
     pub fn is_ending_discovered(&self, index: usize) -> bool {
-        !self.is_known() || self.endings.get(index).copied().unwrap_or(false)
+        self.is_known() && self.endings.get(index).copied().unwrap_or(false)
     }
 
     /// Number of discovered endings, or `None` if the state could not be read.
     pub fn discovered_endings(&self) -> Option<usize> {
-        self.is_known().then(|| {
-            (0..schema::ENDINGS.len())
-                .filter(|&i| self.is_ending_discovered(i))
-                .count()
-        })
+        self.is_known()
+            .then(|| self.endings.iter().filter(|&&found| found).count())
     }
 
     /// Marks ending `index` as reached or not in the game's preferences.
@@ -323,7 +324,8 @@ impl GameProgress {
         Ok(())
     }
 
-    fn unknown(error: String) -> Self {
+    /// An unavailable progress state, with the reason retained for the UI.
+    pub fn unknown(error: String) -> Self {
         Self {
             error: Some(error),
             ..Self::default()
@@ -341,10 +343,9 @@ impl GameProgress {
         self.is_known().then_some(self.deepest_layer)
     }
 
-    /// Whether the player has descended to layer index `biome`. Unknown
-    /// state is treated as reached, like character unlocks.
+    /// Whether the player is known to have descended to layer index `biome`.
     pub fn is_layer_reached(&self, biome: i64) -> bool {
-        !self.is_known() || biome <= self.deepest_layer
+        self.is_known() && biome >= 0 && biome <= self.deepest_layer
     }
 
     /// Builds the state from known win flags (`won[i]`: won as character `i`).
@@ -360,10 +361,9 @@ impl GameProgress {
         self.error.is_none()
     }
 
-    /// Whether `character` can be selected in the game. Unknown state is
-    /// treated as unlocked so the editor never blocks a choice it cannot check.
+    /// Whether `character` is known to be selectable in the game.
     pub fn is_unlocked(&self, character: usize) -> bool {
-        character == 0 || !self.is_known() || self.won.get(character - 1).copied().unwrap_or(false)
+        self.is_known() && (character == 0 || self.won.get(character - 1).copied().unwrap_or(false))
     }
 
     /// Unlocks or locks `character` by setting the win flag of the previous
@@ -410,7 +410,8 @@ mod tests {
         let progress = first_run.with_deepest_layer(3);
         assert!(progress.is_layer_reached(3));
         assert!(!progress.is_layer_reached(4));
-        assert!(GameProgress::unknown("no registry".into()).is_layer_reached(10));
+        assert!(!GameProgress::unknown("no registry".into()).is_layer_reached(10));
+        assert!(!progress.is_layer_reached(-1));
     }
 
     #[test]
@@ -421,7 +422,7 @@ mod tests {
         assert!(!progress.is_ending_discovered(2));
         assert_eq!(progress.discovered_endings(), Some(1));
         let unknown = GameProgress::unknown("no registry".into());
-        assert!(unknown.is_ending_discovered(2));
+        assert!(!unknown.is_ending_discovered(2));
         assert_eq!(unknown.discovered_endings(), None);
     }
 
@@ -461,6 +462,40 @@ mod tests {
     fn progress_is_unknown_when_the_preferences_are_unavailable() {
         let progress = GameProgress::load_from(&Unavailable("not here".into()));
         assert_eq!(progress.error.as_deref(), Some("not here"));
-        assert!(progress.is_unlocked(2));
+        assert!(!progress.is_known());
+        assert!(!progress.is_unlocked(0));
+        assert!(!progress.is_unlocked(2));
+        assert!(!progress.is_layer_reached(0));
+        assert!(!progress.is_layer_reached(10));
+        assert!(!progress.is_ending_discovered(0));
+        assert_eq!(progress.deepest_layer(), None);
+        assert_eq!(progress.discovered_endings(), None);
+    }
+
+    #[test]
+    fn malformed_wine_preferences_are_unknown_not_missing_or_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("user.reg");
+        for value in [
+            "dword:not-hex",
+            "hex(b):01",
+            "hex(b):01,00,00,00,00,00,00,00,00",
+        ] {
+            std::fs::write(
+                &file,
+                format!(
+                    "WINE REGISTRY Version 2\n\n{}\n\"{}\"={value}\n",
+                    WineRegistry::section_header(),
+                    value_name(DEEPEST_LAYER_KEY),
+                ),
+            )
+            .unwrap();
+            let prefs = WineRegistry::new(file.clone());
+            assert!(prefs.get_int(DEEPEST_LAYER_KEY).is_err());
+            let progress = GameProgress::load_from(&prefs);
+            assert!(!progress.is_known());
+            assert!(!progress.is_layer_reached(0));
+            assert_eq!(progress.deepest_layer(), None);
+        }
     }
 }

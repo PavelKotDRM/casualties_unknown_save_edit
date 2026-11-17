@@ -17,6 +17,7 @@ pub fn show(
     game: Option<&GameInfo>,
     progress: &GameProgress,
     achievements: Option<&Achievements>,
+    spoilers: &mut super::spoilers::Spoilers,
 ) -> Option<egui::Rect> {
     if !*open {
         return None;
@@ -35,7 +36,7 @@ pub fn show(
             .show(ui, |ui| {
                 editor_card(ui, names);
                 game_card(ui, names, game);
-                progress_card(ui, names, progress, achievements);
+                progress_card(ui, names, progress, achievements, spoilers);
             });
     })
     .map(|shown| shown.response.rect)
@@ -200,6 +201,7 @@ fn progress_card(
     names: Names,
     progress: &GameProgress,
     achievements: Option<&Achievements>,
+    spoilers: &mut super::spoilers::Spoilers,
 ) {
     card(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -233,11 +235,13 @@ fn progress_card(
                 ui.label(names.layer(deepest));
             });
         }
+        ui.horizontal_wrapped(|ui| super::spoilers::layer_total(ui, names, spoilers));
         if let Some(endings) = progress.discovered_endings() {
             fact(ui, &names.text("Endings discovered"), |ui| {
-                ui.label(of(endings, schema::ENDINGS.len()));
+                ui.label(endings.to_string());
             });
         }
+        ui.horizontal_wrapped(|ui| super::spoilers::ending_total(ui, names, spoilers));
     });
 }
 
@@ -275,7 +279,15 @@ mod tests {
                 ..Default::default()
             };
             let mut output = ctx.run_ui(input, |ui| {
-                rect = show(ui.ctx(), &mut open, names, Some(&game), &progress, None);
+                rect = show(
+                    ui.ctx(),
+                    &mut open,
+                    names,
+                    Some(&game),
+                    &progress,
+                    None,
+                    &mut super::super::spoilers::Spoilers::default(),
+                );
             });
             output.textures_delta.clear();
         }
