@@ -100,6 +100,14 @@ unmodified file is written back byte-for-byte identical.
   matches every word, ranks title matches first and highlights hits (Ctrl+F,
   Esc to clear). Articles and search results are cached; only visible cards
   are laid out, including in large item listings.
+  Status cards use localized names and the installed game's background palette
+  (including its neutral and special colours), not editor-authored medical
+  classifications. Dynamic or unresolved severity uses the native neutral shade.
+  Item/liquid stat names prefer the game's language file; missing labels use the
+  selected interface language, including built-in Russian stat translations.
+  Unknown fields fall back to readable names. Effect colours use game-derived
+  healthy bounds and status guards. Ambiguous changes, such as raising an already
+  unknown body temperature, remain neutral.
 - **Backups** (*File → Backups…*). A timestamped copy goes to a
   `SaveEditorBackups` folder next to the save whenever a file is opened,
   restored over or overwritten after an outside change. The browser compares any
@@ -357,7 +365,7 @@ that need the game or a save are skipped otherwise.
   uploaded as artifacts.
 - [`release.yml`](.github/workflows/release.yml) runs when a `v*` tag is pushed.
   It checks that the tag matches the version in `Cargo.toml`, builds and
-  packages all three platforms with build provenance attestations, and publishes
+  packages the enabled platforms in its build matrix with build provenance attestations, and publishes
   a GitHub release with generated notes:
 
   ```sh
@@ -368,8 +376,9 @@ that need the game or a save are skipped otherwise.
 - Public release executables are submitted through
   [`crazy-max/ghaction-virustotal`](https://github.com/crazy-max/ghaction-virustotal).
   Configure a repository Actions secret named `VT_API_KEY` before creating a
-  release tag. The publish job requires the secret, submits the Windows, Linux
-  and macOS executables (not saves or game files), limits submissions to one
+  release tag. The publish job requires the secret, submits one executable per
+  downloaded release archive (not saves or game files), checks the matching
+  number of analysis links, limits submissions to one
   per minute to allow for large-file API requests, and adds analysis links to
   the release notes and job summary.
   Submission does **not** mean an analysis has completed or that a file is safe;

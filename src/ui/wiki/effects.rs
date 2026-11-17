@@ -202,7 +202,7 @@ pub(super) fn stat_label(names: Names, effect: &Effect) -> (String, Option<&'sta
         _ => schema::limb_field(stat),
     };
     if let Some(field) = field {
-        return (names.text(field.label).into_owned(), Some(field));
+        return (field_label(names, field), Some(field));
     }
     let label = match (&effect.target, stat) {
         (Target::Component(c), "opiateAmount") if c == "Painkillers" => "Opioids",
@@ -211,9 +211,31 @@ pub(super) fn stat_label(names: Names, effect: &Effect) -> (String, Option<&'sta
         (Target::Component(c), "amount") if c == "SleepingPills" => "Sleeping pills",
         (_, "disinfect") => "Disinfection",
         (_, "vomit") => "Vomiting",
-        _ => return (humanize(stat), None),
+        _ => return (readable_stat(names, stat), None),
     };
     (names.text(label).into_owned(), None)
+}
+
+pub(super) fn field_label(names: Names, field: &FieldSpec) -> String {
+    if field.label != field.key {
+        names.text(field.label).into_owned()
+    } else {
+        readable_stat(names, field.key)
+    }
+}
+
+fn readable_stat(names: Names, key: &str) -> String {
+    let stem = key
+        .strip_suffix("Amount")
+        .or_else(|| key.strip_suffix("Level"))
+        .unwrap_or(key);
+    if let Some(text) = names
+        .locale
+        .and_then(|locale| locale.other(key).or_else(|| locale.moodle_name(stem)))
+    {
+        return strip_rich_text(text);
+    }
+    names.text(&humanize(stem)).into_owned()
 }
 
 /// `bandageSlowAmount` → `Bandage slow amount`.
@@ -243,11 +265,29 @@ pub(super) fn effect_line(names: Names, effect: &Effect) -> (String, Tone) {
     // Units carry their own spacing (`" kg"`, `"%"`).
     let unit = field.map_or("", |f| f.unit);
     let rising = match effect.change {
-        Change::Add(v) => Some(v > 0.0),
-        Change::Multiply(v) => Some(v > 1.0),
-        Change::Set(_) | Change::Trigger => None,
+        Change::Add(v) if v != 0.0 => Some(v > 0.0),
+        Change::Multiply(v) if v != 1.0 => Some(v > 1.0),
+        _ => None,
     };
-    let mut tone = match (field.map(|f| f.good), rising) {
+    let direction = field.map(|field| {
+        let owner = if effect.target == Target::Body {
+            "Body"
+        } else {
+            "Limb"
+        };
+        crate::game_data::runtime::metadata()
+            .moodles
+            .directions
+            .get(&format!("{owner}.{}", field.key))
+            .copied()
+            .unwrap_or(match field.good {
+                Good::Near(target) if target == field.min => Good::Low,
+                Good::Near(target) if target == field.max => Good::High,
+                Good::High | Good::Low => field.good,
+                _ => Good::Neutral,
+            })
+    });
+    let mut tone = match (direction, rising) {
         (Some(Good::High), Some(up)) if up => Tone::Good,
         (Some(Good::High), Some(_)) => Tone::Bad,
         (Some(Good::Low), Some(up)) if up => Tone::Bad,

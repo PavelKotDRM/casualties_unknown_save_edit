@@ -16,6 +16,8 @@ use super::{ItemStats, StaticValue, instruction_string, instruction_value};
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Metadata {
+    pub moodles: super::moodles::MoodleData,
+    pub moodles_error: Option<String>,
     pub ammunition: Option<super::ammunition::AmmunitionData>,
     pub ammunition_error: Option<String>,
     pub items: Vec<ItemDef>,

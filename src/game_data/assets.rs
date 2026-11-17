@@ -18,6 +18,65 @@ struct Cursor<'a> {
     offset: usize,
 }
 
+pub(super) fn moodle_palette(data_dir: &Path) -> Result<Vec<[u8; 3]>, String> {
+    use unity_rs_core::scene::{ObjectReference, resolve_object_reference};
+    let studio = Studio::open(data_dir).map_err(|error| error.to_string())?;
+    let manager = studio
+        .objects()
+        .find(|object| object.class_id() == 114 && object.name() == Some("MoodleManager"))
+        .ok_or("Missing MoodleManager status palette")?;
+    let bytes = manager
+        .read_raw(1024 * 1024)
+        .map_err(|error| error.to_string())?;
+    let mut cursor = Cursor {
+        bytes: &bytes,
+        offset: mono_behaviour_data_offset(&bytes).ok_or("Invalid MoodleManager header")?,
+    };
+    cursor
+        .reference()
+        .ok_or("Invalid MoodleManager transform reference")?;
+    let count = cursor
+        .i32()
+        .and_then(|count| usize::try_from(count).ok())
+        .filter(|count| (1..=256).contains(count))
+        .ok_or("Invalid MoodleManager background palette size")?;
+    let mut palette = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (file_id, path_id) = cursor
+            .reference()
+            .ok_or("Truncated MoodleManager palette")?;
+        let target = resolve_object_reference(
+            studio.collection(),
+            manager.file_index(),
+            ObjectReference { file_id, path_id },
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or("Null status background sprite")?;
+        let sprite = studio
+            .object_by_index(target.file_index, target.object_index)
+            .ok_or("Missing status background sprite")?;
+        let image = sprite
+            .decode_sprite(Default::default(), Default::default())
+            .map_err(|error| format!("Cannot decode status palette: {error}"))?;
+        let mut totals = [0_u64; 4];
+        for pixel in image.pixels.as_chunks::<4>().0 {
+            for channel in 0..3 {
+                totals[channel] += u64::from(pixel[channel]) * u64::from(pixel[3]);
+            }
+            totals[3] += u64::from(pixel[3]);
+        }
+        if totals[3] == 0 {
+            return Err("Status background sprite is fully transparent".into());
+        }
+        palette.push([
+            (totals[0] / totals[3]) as u8,
+            (totals[1] / totals[3]) as u8,
+            (totals[2] / totals[3]) as u8,
+        ]);
+    }
+    Ok(palette)
+}
+
 fn enum_constant(assembly: &CilObject, owner: &str, name: &str) -> Option<i64> {
     assembly.types().iter().find_map(|entry| {
         let ty = entry.value();

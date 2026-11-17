@@ -10,6 +10,7 @@ mod assets;
 pub mod effects;
 mod il;
 pub mod metadata;
+pub mod moodles;
 pub mod program;
 pub mod runtime;
 
@@ -101,6 +102,11 @@ pub fn load_game_data(game_dir: &Path) -> Result<GameData, String> {
     match assets::ammunition(&data_dir, &assembly) {
         Ok(ammunition) => metadata.ammunition = Some(ammunition),
         Err(error) => metadata.ammunition_error = Some(error),
+    }
+    match assets::moodle_palette(&data_dir).and_then(|palette| moodles::parse(&assembly, &palette))
+    {
+        Ok(moodles) => metadata.moodles = moodles,
+        Err(error) => metadata.moodles_error = Some(error),
     }
     runtime::install(metadata.clone());
     Ok(GameData {

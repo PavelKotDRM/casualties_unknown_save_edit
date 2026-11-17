@@ -96,23 +96,39 @@ jobs:
             exit 1
           fi
       - name: Prepare release executables for scanning
+        id: scan
         run: |
-          mkdir -p scan
-          for archive in dist/*.zip; do
-            destination="scan/$(basename "$archive" .zip)"
-            mkdir -p "$destination"
-            unzip -j "$archive" '*/cu_save_editor.exe' -d "$destination"
-          done
-          for archive in dist/*.tar.gz; do
-            destination="scan/$(basename "$archive" .tar.gz)"
-            mkdir -p "$destination"
-            tar -xzf "$archive" -C "$destination" --strip-components=1 --wildcards '*/cu_save_editor'
-          done
-          mapfile -d '' executables < <(find scan -type f \( -name cu_save_editor -o -name cu_save_editor.exe \) -print0)
-          if [ "${#executables[@]}" -ne 3 ]; then
-            echo "::error::Expected exactly three release executables for VirusTotal"
+          shopt -s nullglob
+          archives=(dist/*.zip dist/*.tar.gz)
+          if [ "${#archives[@]}" -eq 0 ]; then
+            echo "::error::No release archives were downloaded for VirusTotal"
             exit 1
           fi
+          mkdir -p scan
+          for archive in "${archives[@]}"; do
+            destination="scan/$(basename "${archive%.tar.gz}" .zip)"
+            mkdir -p "$destination"
+            case "$archive" in
+              *.zip)
+                executable=cu_save_editor.exe
+                unzip -j "$archive" "*/$executable" -d "$destination"
+                ;;
+              *.tar.gz)
+                executable=cu_save_editor
+                tar -xzf "$archive" -C "$destination" --strip-components=1 --wildcards "*/$executable"
+                ;;
+            esac
+            if [ ! -f "$destination/$executable" ]; then
+              echo "::error::Release archive $archive did not contain $executable"
+              exit 1
+            fi
+          done
+          mapfile -d '' executables < <(find scan -type f \( -name cu_save_editor -o -name cu_save_editor.exe \) -print0)
+          if [ "${#executables[@]}" -ne "${#archives[@]}" ]; then
+            echo "::error::Expected one VirusTotal executable per release archive (${#archives[@]}), found ${#executables[@]}"
+            exit 1
+          fi
+          echo "count=${#executables[@]}" >> "$GITHUB_OUTPUT"
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -131,10 +147,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VT_ANALYSIS: ${{ steps.virustotal.outputs.analysis }}
+          EXPECTED_EXECUTABLES: ${{ steps.scan.outputs.count }}
         run: |
           IFS=',' read -ra analyses <<< "$VT_ANALYSIS"
-          if [ "${#analyses[@]}" -ne 3 ]; then
-            echo "::error::VirusTotal did not return three submission links"
+          if [ "${#analyses[@]}" -ne "$EXPECTED_EXECUTABLES" ]; then
+            echo "::error::Expected $EXPECTED_EXECUTABLES VirusTotal submission links, received ${#analyses[@]}"
             exit 1
           fi
           {

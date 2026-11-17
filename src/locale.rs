@@ -84,6 +84,13 @@ impl Locale {
         non_empty(self.other.get(key))
     }
 
+    pub fn moodle_name(&self, id: &str) -> Option<&str> {
+        self.moodles
+            .iter()
+            .find(|(key, name)| key.eq_ignore_ascii_case(id) && !name.trim().is_empty())
+            .map(|(_, name)| name.as_str())
+    }
+
     /// Status effects as `(id, name, description)` in the game's order.
     pub fn moodles(&self) -> Vec<(&str, &str, Option<&str>)> {
         let description = |id: &str| {
@@ -96,7 +103,12 @@ impl Locale {
         };
         self.moodles
             .iter()
-            .filter(|(id, name)| !id.ends_with("dsc") && !name.trim().is_empty())
+            .filter(|(id, name)| {
+                let description_variant = id
+                    .find("dsc")
+                    .is_some_and(|at| self.moodles.iter().any(|(key, _)| key == &id[..at]));
+                !id.ends_with("dsc") && !description_variant && !name.trim().is_empty()
+            })
             .map(|(id, name)| (id.as_str(), name.as_str(), description(id)))
             .collect()
     }
@@ -186,7 +198,7 @@ mod tests {
     #[test]
     fn moodles_pair_names_with_descriptions_in_file_order() {
         let l = Locale::from_json(
-            r#"{"moodles":{"pain2":"Pain","pain2dsc":"It hurts.","pain1":"Ache","stroke":"Stroke","strokedsc":""}}"#,
+            r#"{"moodles":{"pain2":"Pain","pain2dsc":"It hurts.","pain2dscalt":"Alternate description.","pain1":"Ache","stroke":"Stroke","strokedsc":""}}"#,
         )
         .unwrap();
         assert_eq!(

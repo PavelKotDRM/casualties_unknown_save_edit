@@ -1,6 +1,7 @@
 pub(super) fn translate(source: &str) -> Option<&'static str> {
     match source {
         "Game wiki" => Some("Вики игры"),
+        "Status colours unavailable:" => Some("Цвета состояний недоступны:"),
         "Search all sections…" => Some("Поиск по всем разделам…"),
         "Game language files not found: descriptions are limited." => {
             Some("Языковые файлы игры не найдены: описания ограничены.")

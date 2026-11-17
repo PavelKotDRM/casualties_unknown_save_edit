@@ -13,6 +13,33 @@ fn runtime_catalogues_and_rules_come_from_the_installed_game() {
     };
     let data = cu_save_editor::game_data::load_game_data(Path::new(&game_dir)).unwrap();
     let metadata = &data.metadata;
+    assert!(
+        metadata.moodles_error.is_none(),
+        "{:?}",
+        metadata.moodles_error
+    );
+    let [red, green, blue] = metadata.moodles.colours["pain2"];
+    assert!(red > green && green >= blue);
+    let [red, green, blue] = metadata.moodles.colours["energized"];
+    assert!(green > red && green > blue);
+    let [red, green, blue] = metadata.moodles.colours["focused"];
+    assert!(blue > red && blue > green);
+    assert_eq!(
+        metadata.moodles.directions["Body.stamina"],
+        schema::Good::High
+    );
+    assert_eq!(
+        metadata.moodles.directions["Body.sicknessAmount"],
+        schema::Good::Low
+    );
+    assert_eq!(
+        metadata.moodles.directions["Body.heartRate"],
+        schema::Good::Neutral
+    );
+    assert_eq!(
+        metadata.moodles.directions["Body.focusedLevel"],
+        schema::Good::Neutral
+    );
     let ammunition = metadata.ammunition.as_ref().unwrap_or_else(|| {
         panic!(
             "ammunition metadata unavailable: {:?}",

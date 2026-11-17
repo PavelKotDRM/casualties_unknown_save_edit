@@ -118,6 +118,8 @@ enum Tone {
 #[derive(Debug)]
 struct Entry {
     title: String,
+    title_colour: Option<Color32>,
+    search_alias: Option<String>,
     subtitle: String,
     text: Option<String>,
     facts: Vec<(String, String)>,
@@ -130,6 +132,8 @@ impl Entry {
     fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
+            title_colour: None,
+            search_alias: None,
             subtitle: String::new(),
             text: None,
             facts: Vec::new(),
@@ -148,6 +152,7 @@ impl Entry {
             .text
             .iter()
             .map(|text| fold(text))
+            .chain(self.search_alias.iter().map(|text| fold(text)))
             .chain(self.facts.iter().map(|(k, v)| fold(&format!("{k} {v}"))))
             .chain(self.lists.iter().flat_map(|(heading, lines)| {
                 std::iter::once(fold(heading)).chain(lines.iter().map(|(line, _)| fold(line)))
@@ -320,6 +325,16 @@ fn contents(ui: &mut Ui, state: &mut WikiState, sources: &mut Sources) {
         // would be laid out left to right without wrapping.
         ui.vertical(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            if matches!(
+                state.section,
+                Section::Conditions | Section::Items | Section::Liquids
+            ) && let Some(error) = &crate::game_data::runtime::metadata().moodles_error
+            {
+                ui.colored_label(
+                    colors::WARN,
+                    format!("{} {error}", names.text("Status colours unavailable:")),
+                );
+            }
             if terms.is_empty() {
                 ui.horizontal_wrapped(|ui| match state.section {
                     Section::Endings => {
@@ -523,7 +538,7 @@ fn entry_card(ui: &mut Ui, entry: &Entry, terms: &[String]) {
                 ui,
                 &entry.title,
                 terms,
-                colors::ACCENT,
+                entry.title_colour.unwrap_or(colors::ACCENT),
             )));
             if !entry.subtitle.is_empty() {
                 ui.add(egui::Label::new(highlighted(
@@ -993,6 +1008,272 @@ mod tests {
             ),
         );
         assert_eq!(line, "Opioids +140");
+    }
+
+    #[test]
+    fn status_cards_use_localized_names_and_native_colours_including_search() {
+        let native = [
+            ("pain2", [180, 99, 99]),
+            ("energized", [126, 166, 126]),
+            ("focused", [110, 129, 177]),
+        ];
+        let _metadata = scoped_for_test(Metadata {
+            moodles: crate::game_data::moodles::MoodleData {
+                colours: native
+                    .into_iter()
+                    .map(|(key, colour)| (key.to_owned(), colour))
+                    .collect(),
+                neutral_colour: Some([94, 94, 94]),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let locale = crate::locale::Locale::from_json(
+            r#"{"moodles":{"pain2":"<b>Localized pain</b>","pain2dsc":"Pain description","energized":"Localized energy","focused":"Localized focus","focuseddscalt":"Alternate description","unknown":"Unknown intensity"}}"#,
+        ).unwrap();
+        let names = Names {
+            locale: Some(&locale),
+            interface_language: InterfaceLanguage::English,
+        };
+        let stats = HashMap::new();
+        let effects = GameEffects::default();
+        let progress = GameProgress::from_wins(vec![]);
+        let sources = sources_for(names, &stats, &effects, &progress);
+        let list = entries(Section::Conditions, &sources);
+        assert_eq!(list.len(), 4);
+        assert_eq!(list[0].title, "Localized pain");
+        assert!(list.iter().all(|entry| entry.subtitle.is_empty()));
+        assert!(list[0].matches("pain2"));
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            for entry in &list {
+                entry_card(ui, entry, &[]);
+            }
+        });
+        output.textures_delta.clear();
+        for (index, colour) in native
+            .into_iter()
+            .map(|(_, colour)| colour)
+            .chain(std::iter::once([94, 94, 94]))
+            .enumerate()
+        {
+            let title = &list[index].title;
+            let text = output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.text() == title
+                    {
+                        Some(text)
+                    } else {
+                        None
+                    }
+                })
+                .expect("visible status name");
+            assert_eq!(
+                text.galley.job.sections[0].format.color,
+                Color32::from_rgb(colour[0], colour[1], colour[2])
+            );
+        }
+    }
+
+    #[test]
+    fn raw_stat_names_and_runtime_healthy_targets_format_and_colour_effects() {
+        let field = |key, min, max, good| FieldSpec {
+            key,
+            label: key,
+            help: "",
+            kind: Kind::Gauge,
+            min,
+            max,
+            unit: "",
+            good,
+        };
+        let fields = Box::leak(
+            vec![
+                field("pain", 0.0, 100.0, Good::Near(0.0)),
+                field("brainHealth", 0.0, 100.0, Good::Near(100.0)),
+                field("temperature", 20.0, 50.0, Good::Near(37.0)),
+                field("stamina", f32::NEG_INFINITY, f32::INFINITY, Good::Neutral),
+                field("caffeinated", 0.0, 100.0, Good::Near(0.0)),
+                field("focusedLevel", 0.0, 100.0, Good::Near(0.0)),
+                field(
+                    "strokeAmount",
+                    f32::NEG_INFINITY,
+                    f32::INFINITY,
+                    Good::Neutral,
+                ),
+            ]
+            .into_boxed_slice(),
+        );
+        let _metadata = scoped_for_test(Metadata {
+            body_groups: vec![schema::FieldGroup {
+                title: "Body",
+                icon: "",
+                fields,
+            }],
+            moodles: crate::game_data::moodles::MoodleData {
+                directions: [
+                    ("Body.stamina".to_owned(), Good::High),
+                    ("Body.caffeinated".to_owned(), Good::High),
+                    ("Body.focusedLevel".to_owned(), Good::Neutral),
+                ]
+                .into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let locale =
+            crate::locale::Locale::from_json(r#"{"moodles":{"stroke":"Localized stroke"}}"#)
+                .unwrap();
+        let names = Names {
+            locale: Some(&locale),
+            interface_language: InterfaceLanguage::English,
+        };
+        let effect = |stat: &str, change| Effect {
+            target: Target::Body,
+            stat: stat.into(),
+            change,
+            seconds: None,
+            whole_item: false,
+            conditional: false,
+        };
+        for (stat, change, expected, tone) in [
+            ("pain", Change::Add(-5.0), "Pain −5", Tone::Good),
+            ("pain", Change::Add(5.0), "Pain +5", Tone::Bad),
+            (
+                "brainHealth",
+                Change::Add(5.0),
+                "Brain health +5",
+                Tone::Good,
+            ),
+            (
+                "brainHealth",
+                Change::Multiply(0.5),
+                "Brain health ×0.5",
+                Tone::Bad,
+            ),
+            (
+                "temperature",
+                Change::Add(1.0),
+                "Temperature +1",
+                Tone::Neutral,
+            ),
+            ("stamina", Change::Add(10.0), "Stamina +10", Tone::Good),
+            (
+                "caffeinated",
+                Change::Add(5.0),
+                "Caffeinated +5",
+                Tone::Good,
+            ),
+            (
+                "strokeAmount",
+                Change::Add(-5.0),
+                "Localized stroke −5",
+                Tone::Neutral,
+            ),
+            ("pain", Change::Add(0.0), "Pain +0", Tone::Neutral),
+            (
+                "focusedLevel",
+                Change::Add(5.0),
+                "Focused +5",
+                Tone::Neutral,
+            ),
+            ("pain", Change::Multiply(1.0), "Pain ×1", Tone::Neutral),
+        ] {
+            assert_eq!(
+                effect_line(names, &effect(stat, change)),
+                (expected.to_owned(), tone)
+            );
+        }
+    }
+
+    #[test]
+    fn effect_labels_fall_back_to_the_selected_interface_language() {
+        let _metadata = scoped_for_test(Metadata {
+            body_groups: vec![schema::FieldGroup {
+                title: "Body",
+                icon: "",
+                fields: &[FieldSpec {
+                    key: "happiness",
+                    label: "happiness",
+                    help: "",
+                    kind: Kind::Gauge,
+                    min: 0.0,
+                    max: 100.0,
+                    unit: "",
+                    good: Good::High,
+                }],
+            }],
+            ..Default::default()
+        });
+        let locale =
+            crate::locale::Locale::from_json(r#"{"moodles":{"pain":"Боль из игры"}}"#).unwrap();
+        let names = Names {
+            locale: Some(&locale),
+            interface_language: InterfaceLanguage::Russian,
+        };
+        for (target, stat, amount, english, russian) in [
+            (
+                Target::Body,
+                "happiness",
+                -5.0,
+                "Happiness −5",
+                "Настроение −5",
+            ),
+            (
+                Target::Body,
+                "septicShock",
+                -25.0,
+                "Septic shock −25",
+                "Септический шок −25",
+            ),
+            (
+                Target::Body,
+                "antibioticImmunityTime",
+                2500.0,
+                "Antibiotic immunity time +2500",
+                "Время защиты антибиотиками +2500",
+            ),
+            (
+                Target::TreatedLimb,
+                "muscleHealth",
+                5.0,
+                "Muscle health +5",
+                "Состояние мышц +5",
+            ),
+        ] {
+            let effect = Effect {
+                target,
+                stat: stat.into(),
+                change: Change::Add(amount),
+                seconds: None,
+                whole_item: false,
+                conditional: false,
+            };
+            assert_eq!(effect_line(names, &effect).0, russian);
+            assert_eq!(
+                effect_line(
+                    Names {
+                        interface_language: InterfaceLanguage::English,
+                        ..names
+                    },
+                    &effect,
+                )
+                .0,
+                english,
+            );
+        }
+        let effect = Effect {
+            target: Target::TreatedLimb,
+            stat: "pain".into(),
+            change: Change::Add(-5.0),
+            seconds: None,
+            whole_item: false,
+            conditional: false,
+        };
+        assert_eq!(effect_line(names, &effect).0, "Боль из игры −5");
     }
 
     #[test]
