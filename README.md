@@ -344,7 +344,8 @@ your own copy of the game, available on
 
 ## TODO
 
-Fix the issues related to Linux; there are no games in the system, but progress is considered completely completed.
-Fix All hardcoded parameters need to be removed, and data should be retrieved from the game. Presets, characters, endings, items. The app is empty without the game.
-Add an auto‑balancer for containers to achieve optimal weight distribution.
-Improve the performance of the Wiki with item listings when there are a large number of items.
+- FIX the issues related to Linux; there are no games in the system, but progress is considered completely completed.
+- FIX All hardcoded parameters need to be removed, and data should be retrieved from the game. Presets, characters, endings, items. - The app is empty without the game.
+- ADD an auto‑balancer for containers to achieve optimal weight distribution.
+- Improve the performance of the Wiki with item listings when there are a large number of items.
+- ADD automatic submission for verification to VirusTotal.
