@@ -1,3 +1,5 @@
+use std::ops::RangeInclusive;
+
 use crate::game_data::runtime::{RuntimeSlice, metadata};
 
 /// A playable character, in the game's save-index order.
@@ -6,9 +8,28 @@ pub struct CharacterDef {
     pub name: &'static str,
     pub base_skills: [i64; 3],
     pub gain_multipliers: [f64; 3],
+    /// `Body.heightMultiplier` of the character's prefab.
+    pub height_multiplier: Option<f32>,
 }
 
 pub const CHARACTERS: RuntimeSlice<CharacterDef> = RuntimeSlice(|| &metadata().characters);
+
+/// Save keys of the identity rolled by `PlayerCamera.Start` for a new run.
+pub const IDENTITY_KEYS: [&str; 4] = ["cHeight", "cAge", "cId", "cVer"];
+
+/// Values the game can roll for `IDENTITY_KEYS[key]` when a run starts as
+/// `character`; the height is scaled by the character's height multiplier.
+pub fn identity_range(key: usize, character: usize) -> Option<RangeInclusive<i64>> {
+    let [min, max] = *metadata().character_identity.as_ref()?.get(key)?;
+    let range = min..=max - 1;
+    if key != 0 {
+        return Some(range);
+    }
+    let multiplier = CHARACTERS.get(character)?.height_multiplier?;
+    // Matches the game's `(int)((float)height * heightMultiplier)`.
+    let scale = |value: i64| (value as f32 * multiplier) as i64;
+    Some(scale(*range.start())..=scale(*range.end()))
+}
 
 /// A body slot, in serialized `Body.slots` order.
 #[derive(Debug, Clone, Copy, PartialEq)]

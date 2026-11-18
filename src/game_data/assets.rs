@@ -540,6 +540,30 @@ impl<'a> Cursor<'a> {
                 }
                 json!(values)
             }
+            TypeSignature::GenericInst(base, arguments) => {
+                let (TypeSignature::Class(token) | TypeSignature::ValueType(token)) = base.as_ref()
+                else {
+                    return None;
+                };
+                match assembly.types().get(token)?.name.as_str() {
+                    // Unity does not serialize nullable values.
+                    "Nullable`1" => serde_json::Value::Null,
+                    "List`1" => {
+                        let [item] = arguments.as_slice() else {
+                            return None;
+                        };
+                        let count = usize::try_from(self.i32()?)
+                            .ok()
+                            .filter(|count| *count <= 4096)?;
+                        let mut values = Vec::with_capacity(count);
+                        for _ in 0..count {
+                            values.push(self.value(assembly, item)?);
+                        }
+                        json!(values)
+                    }
+                    _ => return None,
+                }
+            }
             TypeSignature::Class(token) | TypeSignature::ValueType(token) => {
                 let definition = assembly.types().get(token);
                 if definition
@@ -558,11 +582,27 @@ impl<'a> Cursor<'a> {
                         self.skip(12)?;
                         serde_json::Value::Null
                     }
+                    // Unity 2022.3 layout: 8 RGBA keys, 16 u16 key times, then
+                    // mode, colour space and both key counts as single bytes.
+                    "Gradient" => {
+                        self.skip(164)?;
+                        serde_json::Value::Null
+                    }
                     "AnimationCurve" => {
                         let count = usize::try_from(self.i32()?)
                             .ok()
                             .filter(|count| *count <= 4096)?;
                         self.skip(count.checked_mul(28)?.checked_add(12)?)?;
+                        serde_json::Value::Null
+                    }
+                    // Game types without [Serializable] that are not Unity
+                    // objects are not serialized at all.
+                    _ if definition.as_ref().is_some_and(|ty| {
+                        !ty.is_typeref()
+                            && !ty.flags.is_serializable()
+                            && !ty.base_chain().any(|base| base.namespace == "UnityEngine")
+                    }) =>
+                    {
                         serde_json::Value::Null
                     }
                     _ if matches!(ty, TypeSignature::Class(_)) => {
@@ -628,6 +668,8 @@ pub(super) fn player(
             })
         })
         .unwrap_or_default();
+    let constructor_defaults = metadata.body_defaults.clone();
+    let mut body_defaults_from_prefab = false;
     for object in studio
         .objects()
         .filter(|object| object.class_id() == 114 && object.name() == Some("Body"))
@@ -644,11 +686,22 @@ pub(super) fn player(
         };
         let mut limbs = Vec::new();
         let mut slots = Vec::new();
-        let mut defaults = metadata.body_defaults.clone();
+        let mut defaults = constructor_defaults.clone();
+        let mut character = None;
+        let mut height_multiplier = None;
         for (field, ty) in &fields {
             let Some(value) = cursor.value(assembly, ty) else {
                 break;
             };
+            match field.as_str() {
+                "charType" => character = value.as_u64().and_then(|c| usize::try_from(c).ok()),
+                "heightMultiplier" => {
+                    height_multiplier = value
+                        .as_f64()
+                        .filter(|value| value.is_finite() && *value > 0.0)
+                }
+                _ => {}
+            }
             if field == "limbs" || field == "slots" {
                 let Some(values) = value.as_array() else {
                     break;
@@ -677,7 +730,6 @@ pub(super) fn player(
                     limbs = names;
                 } else {
                     slots = names;
-                    break;
                 }
             } else if defaults.contains_key(field) && !value.is_null() {
                 defaults.insert(field.clone(), value);
@@ -710,7 +762,17 @@ pub(super) fn player(
         }
         metadata.limbs = limb_defs;
         metadata.hold_slots = slot_defs;
-        metadata.body_defaults = defaults;
+        if let (Some(index), Some(multiplier)) = (character, height_multiplier)
+            && let Some(def) = metadata.characters.get_mut(index)
+        {
+            def.height_multiplier = Some(multiplier as f32);
+        }
+        // Saved body defaults differ slightly between character prefabs; use
+        // the first character's so the template does not depend on asset order.
+        if character == Some(0) || !body_defaults_from_prefab {
+            metadata.body_defaults = defaults;
+            body_defaults_from_prefab = true;
+        }
     }
     if metadata.limbs.is_empty() {
         return Err("Cannot decode player prefab limb and inventory slot order".into());

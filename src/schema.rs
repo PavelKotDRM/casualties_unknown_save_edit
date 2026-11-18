@@ -72,8 +72,8 @@ mod run;
 
 pub use body::{BODY_GROUPS, body_field};
 pub use character::{
-    CHARACTERS, CharacterDef, HOLD_SLOTS, HoldSlotDef, LAYERS, SKILLS, SkillDef,
-    experience_for_level, try_experience_for_level,
+    CHARACTERS, CharacterDef, HOLD_SLOTS, HoldSlotDef, IDENTITY_KEYS, LAYERS, SKILLS, SkillDef,
+    experience_for_level, identity_range, try_experience_for_level,
 };
 pub use endings::{ENDINGS, EndingDef};
 pub use limbs::{LIMB_FIELDS, LIMBS, LimbDef, limb_field};

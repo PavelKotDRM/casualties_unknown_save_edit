@@ -134,7 +134,7 @@ fn item_row(ui: &mut Ui, item: &Value, names: Names, row: ItemRowState) -> Optio
     let mut action = None;
     let id = item.get("id").and_then(Value::as_str).unwrap_or("");
     let def = catalog::item(id);
-    let icon = def.map_or("❓", |d| category_icon(d.category));
+    let icon = def.map_or("❓", |d| group_icon(d.group));
     let mut text = RichText::new(format!("{icon} {}", names.item(id)));
     if def.is_none() {
         text = text.color(colors::WARN);

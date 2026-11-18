@@ -6,11 +6,15 @@ use serde_json::{Map, Value};
 use super::{LABEL_WIDTH, Names, card, colors, number_editor, section_heading};
 use crate::json::{get_f64, get_i64, set_i64};
 use crate::player_prefs::GameProgress;
-use crate::{model, schema};
+use crate::{model, save, schema};
 
-/// Top-level identity keys shown on this tab.
+/// Top-level identity keys shown on this tab, in `schema::IDENTITY_KEYS` order.
 const IDENTITY: &[(&str, &str, &str)] = &[
-    ("cHeight", "Height (cm)", "Character height."),
+    (
+        "cHeight",
+        "Height (cm)",
+        "Character height. The game rolls it from a range scaled by the character's size.",
+    ),
     ("cAge", "Age", "Character age in years."),
     ("cId", "Experiment id", "Experiment number shown in game."),
     ("cVer", "Version", "Character generation version."),
@@ -289,11 +293,26 @@ pub fn contents(
         if let Some(c) = get_i64(root, "character").and_then(|c| usize::try_from(c).ok()) {
             character_info(ui, names, c);
         }
-        for &(key, text, help) in IDENTITY {
+        let character = get_i64(root, "character").and_then(|c| usize::try_from(c).ok());
+        for (index, &(key, text, help)) in IDENTITY.iter().enumerate() {
+            let range = character.and_then(|c| schema::identity_range(index, c));
             if let Some(v) = root.get_mut(key) {
                 ui.horizontal(|ui| {
                     label(ui, names, text, help);
                     changed |= number_editor(ui, v, 0.2);
+                    if let Some(range) = range {
+                        let text = format!(
+                            "{} {}–{}",
+                            names.text("game range:"),
+                            range.start(),
+                            range.end()
+                        );
+                        if v.as_i64().is_some_and(|value| !range.contains(&value)) {
+                            ui.colored_label(colors::WARN, format!("⚠ {text}"));
+                        } else {
+                            ui.weak(text);
+                        }
+                    }
                 });
             }
         }
@@ -314,6 +333,9 @@ pub fn contents(
             }
         }
         if accepted {
+            if new_save && let Some(height) = save::roll_identity(0, character) {
+                root.insert(schema::IDENTITY_KEYS[0].to_owned(), height.into());
+            }
             changed = true;
         } else if let Some(original) = original_character {
             root.insert("character".to_owned(), original);

@@ -100,6 +100,14 @@ pub(super) fn characters(sources: &Sources) -> Vec<Entry> {
             if index > 0 {
                 entry.facts.extend(requirement);
             }
+            for (key, label) in [(0, "Height (cm)"), (1, "Age")] {
+                if let Some(range) = schema::identity_range(key, index) {
+                    entry.facts.push((
+                        names.text(label).into_owned(),
+                        format!("{}–{}", range.start(), range.end()),
+                    ));
+                }
+            }
             entry.facts.push((
                 names.text("Save value").into_owned(),
                 format!("character = {index}"),

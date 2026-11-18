@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use egui::{ProgressBar, RichText, Ui};
 use serde_json::Value;
 
-use super::{Names, card, category_icon, colors, quality_color};
+use super::{Names, card, colors, group_icon, quality_color};
 use crate::catalog;
 use crate::game_data::ItemStats;
 use crate::json::{self, get_bool};
@@ -443,6 +443,7 @@ mod tests {
                 items: vec![catalog::ItemDef {
                     id: "fixture_cap",
                     category: "wearable",
+                    group: "clothing",
                     wear_slot: "head",
                     capacity: 0.0,
                 }],

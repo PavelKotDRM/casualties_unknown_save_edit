@@ -74,6 +74,20 @@ fn runtime_catalogues_and_rules_come_from_the_installed_game() {
         let stats = &data.items[item.id];
         item.category == stats.category && item.capacity == stats.liquid_capacity.unwrap_or(0.0)
     }));
+    for (id, group) in [
+        ("pistol", "weapons"),
+        ("smallmagazine", "weapons"),
+        ("shovel", "tools"),
+        ("hoodie", "clothing"),
+        ("tacticalboots", "clothing"),
+        ("slingbag", "containers"),
+        ("flashlight", "devices"),
+        ("aquapple", "food"),
+        ("canteen", "drinks"),
+    ] {
+        let item = metadata.items.iter().find(|item| item.id == id).unwrap();
+        assert_eq!(item.group, group, "group of {id}");
+    }
     assert!(!metadata.body_defaults.is_empty());
     assert!(!metadata.limb_defaults.is_empty());
     for key in ["condition", "favourited", "label", "swatch"] {
@@ -90,6 +104,16 @@ fn runtime_catalogues_and_rules_come_from_the_installed_game() {
         metadata.character_identity.is_some(),
         "missing character identity generator"
     );
+    // PlayerCamera.Start: Random.Range(130, 161) * Body.heightMultiplier.
+    let heights: Vec<_> = (0..metadata.characters.len())
+        .map(|character| schema::identity_range(0, character).unwrap())
+        .collect();
+    assert_eq!(heights, [130..=160, 104..=128, 143..=176]);
+    for (character, height) in heights.iter().enumerate() {
+        assert_eq!(schema::identity_range(1, character), Some(10..=25));
+        let rolled = cu_save_editor::save::roll_identity(0, character).unwrap();
+        assert!(height.contains(&rolled));
+    }
     let experience = metadata.experience.as_ref().expect("missing XP curve");
     assert_eq!(experience.evaluate(0), Some(0));
     assert_eq!(experience.evaluate(13), Some(1062));
@@ -134,7 +158,37 @@ fn runtime_catalogues_and_rules_come_from_the_installed_game() {
         save["body"]["skills"][metadata.skills[0].key],
         metadata.characters[0].base_skills[0]
     );
-    assert_eq!(save["character"], 0, "new save must have a selectable character");
+    assert_eq!(
+        save["character"], 0,
+        "new save must have a selectable character"
+    );
+    // SaveSystem.TryLoadGame casts these unconditionally; a missing one aborts
+    // applying the whole world state.
+    for key in [
+        "biome",
+        "totalTraveled",
+        "lootRarity",
+        "trapRarity",
+        "runSettings",
+        "caloriesConsumed",
+        "runTime",
+        "cHeight",
+        "cAge",
+        "cId",
+        "cVer",
+        "lastHappiness",
+        "savedRecipeData",
+        "endlessLoops",
+        "isMercRun",
+        "cheatedSave",
+    ] {
+        assert!(!save[key].is_null(), "new save is missing {key}");
+    }
+    assert_eq!(save["isMercRun"], false);
+    for (index, key) in schema::IDENTITY_KEYS.into_iter().enumerate() {
+        let value = save[key].as_i64().unwrap();
+        assert!(schema::identity_range(index, 0).unwrap().contains(&value));
+    }
     assert_eq!(save["items"], serde_json::json!([]));
     assert_eq!(
         save["lastHappiness"].as_array().unwrap().len(),

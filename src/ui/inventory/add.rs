@@ -5,7 +5,7 @@ use egui::{RichText, Ui};
 use serde_json::{Value, json};
 
 use super::{
-    InventoryState, Names, category_icon, colors, default_location, holder_location_allowed,
+    InventoryState, Names, colors, default_location, group_icon, holder_location_allowed,
     holder_rules, item_wear_slot, location_choices, location_icon, location_name, row_label,
 };
 use crate::catalog;
@@ -43,26 +43,32 @@ pub(super) fn add_window(
                         .hint_text(names.text("Search name or id").to_string())
                         .desired_width(200.0),
                 );
-                let mut cats: Vec<&str> = catalog::ITEMS.iter().map(|d| d.category).collect();
-                cats.sort_unstable();
-                cats.dedup();
                 egui::ComboBox::from_id_salt("add_cat")
                     .selected_text(if state.add_category.is_empty() {
                         names.text("All categories").to_string()
                     } else {
-                        state.add_category.clone()
+                        let group = catalog::group(&state.add_category);
+                        format!("{} {}", group.icon, names.text(group.label))
                     })
+                    .width(200.0)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut state.add_category,
                             String::new(),
                             names.text("All categories").to_string(),
                         );
-                        for c in cats {
+                        for group in catalog::ITEM_GROUPS {
+                            let count = catalog::ITEMS
+                                .iter()
+                                .filter(|d| d.group == group.id)
+                                .count();
+                            if count == 0 {
+                                continue;
+                            }
                             ui.selectable_value(
                                 &mut state.add_category,
-                                c.to_owned(),
-                                format!("{} {c}", category_icon(c)),
+                                group.id.to_owned(),
+                                format!("{} {} ({count})", group.icon, names.text(group.label)),
                             );
                         }
                     });
@@ -71,7 +77,7 @@ pub(super) fn add_window(
             let needle = state.add_search.to_lowercase();
             let mut list: Vec<(&catalog::ItemDef, String)> = catalog::ITEMS
                 .iter()
-                .filter(|d| state.add_category.is_empty() || d.category == state.add_category)
+                .filter(|d| state.add_category.is_empty() || d.group == state.add_category)
                 .map(|d| (d, names.item(d.id)))
                 .filter(|(d, n)| {
                     needle.is_empty()
@@ -79,7 +85,9 @@ pub(super) fn add_window(
                         || n.to_lowercase().contains(&needle)
                 })
                 .collect();
-            list.sort_by_key(|a| a.1.to_lowercase());
+            list.sort_by_cached_key(|(d, name)| {
+                (catalog::group_order(d.group), name.to_lowercase())
+            });
             egui::ScrollArea::vertical()
                 .max_height(360.0)
                 .auto_shrink([false, false])
@@ -88,9 +96,16 @@ pub(super) fn add_window(
                         let r = ui
                             .selectable_label(
                                 state.add_id == d.id,
-                                format!("{} {name}   ", category_icon(d.category)),
+                                format!("{} {name}   ", group_icon(d.group)),
                             )
-                            .on_hover_text(format!("id: {}\ncategory: {}", d.id, d.category));
+                            .on_hover_text(format!(
+                                "id: {}\n{} {}\n{} {}",
+                                d.id,
+                                names.text("Category:"),
+                                names.text(catalog::group(d.group).label),
+                                names.text("Game category:"),
+                                d.category
+                            ));
                         if r.clicked() {
                             state.add_id = d.id.to_owned();
                         }

@@ -103,6 +103,7 @@ pub fn load_game_data(game_dir: &Path) -> Result<GameData, String> {
         Ok(ammunition) => metadata.ammunition = Some(ammunition),
         Err(error) => metadata.ammunition_error = Some(error),
     }
+    assign_item_groups(&mut metadata, &items, &effects);
     match assets::moodle_palette(&data_dir).and_then(|palette| moodles::parse(&assembly, &palette))
     {
         Ok(moodles) => metadata.moodles = moodles,
@@ -114,6 +115,57 @@ pub fn load_game_data(game_dir: &Path) -> Result<GameData, String> {
         effects,
         metadata,
     })
+}
+
+fn assign_item_groups(
+    metadata: &mut metadata::Metadata,
+    items: &HashMap<String, ItemStats>,
+    effects: &GameEffects,
+) {
+    for def in &mut metadata.items {
+        let Some(stats) = items.get(def.id) else {
+            continue;
+        };
+        let ammunition = metadata.ammunition.as_ref().is_some_and(|ammunition| {
+            ammunition.items.contains_key(def.id) || ammunition.guns.contains_key(def.id)
+        });
+        let profile = effects.items.get(def.id);
+        let edible = profile.is_some_and(|profile| {
+            profile
+                .uses
+                .iter()
+                .flat_map(|item_use| &item_use.effects)
+                .any(|effect| {
+                    effect.target == Target::Body
+                        && match effect.stat.as_str() {
+                            "hunger" | "thirst" => {
+                                matches!(effect.change, Change::Add(amount) if amount > 0.0)
+                            }
+                            // Set while chewing; only food has it.
+                            "eatTime" => true,
+                            _ => false,
+                        }
+                })
+        });
+        let drinkable = profile.is_some_and(|profile| {
+            profile
+                .uses
+                .iter()
+                .any(|item_use| matches!(item_use.contents, Some((ContentsUse::Drink, _))))
+        });
+        def.group = crate::catalog::classify(&crate::catalog::GroupFacts {
+            category: &stats.category,
+            tags: &stats.item_tags,
+            worn: stats.wear_slot.is_some(),
+            bag: stats.wear_slot.is_some()
+                && stats.container_capacity.is_some()
+                && stats.armor.is_none_or(|armor| armor <= 0.0)
+                && stats.insulation.is_none_or(|insulation| insulation <= 0.0),
+            ammunition,
+            edible,
+            drinkable,
+        });
+    }
 }
 
 #[cfg(test)]

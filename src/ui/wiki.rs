@@ -17,7 +17,7 @@ use egui::{Color32, Key, KeyboardShortcut, Modifiers, RichText, TextFormat, Ui};
 use serde_json::Value;
 
 use super::spoilers::{self, EndingHints, SpoilerUi, Spoilers};
-use super::{Names, category_icon, colors, fmt_num, prettify_id, strip_rich_text};
+use super::{Names, colors, fmt_num, prettify_id, strip_rich_text};
 use crate::catalog;
 use crate::game_data::{Change, ContentsUse, Effect, GameEffects, ItemStats, Target};
 use crate::player_prefs::GameProgress;
@@ -630,6 +630,7 @@ mod tests {
             name,
             base_skills: [0; 3],
             gain_multipliers: [1.0; 3],
+            height_multiplier: None,
         };
         let ending = |name, how| schema::EndingDef {
             pref_key: name,
@@ -893,6 +894,7 @@ mod tests {
             items: vec![catalog::ItemDef {
                 id: "bandage",
                 category: "medical",
+                group: "medical",
                 wear_slot: "",
                 capacity: 0.0,
             }],

@@ -5,18 +5,19 @@ use super::*;
 
 pub(super) fn items(sources: &Sources) -> Vec<Entry> {
     let names = sources.names;
-    let mut list: Vec<(String, Entry)> = catalog::ITEMS
+    let mut list: Vec<(usize, Entry)> = catalog::ITEMS
         .iter()
         .map(|def| {
             let stats = sources.item_stats.get(def.id);
             let category = stats.map_or(def.category, |s| s.category.as_str());
-            let mut entry = Entry::new(format!(
-                "{} {}",
-                category_icon(category),
-                names.item(def.id)
-            ));
-            entry.subtitle = format!("{} · {}", names.text(category), def.id);
+            let group = catalog::group(def.group);
+            let mut entry = Entry::new(format!("{} {}", group.icon, names.item(def.id)));
+            entry.subtitle = format!("{} · {}", names.text(group.label), def.id);
             entry.text = names.item_description(def.id);
+            entry.facts.push((
+                names.text("Game category").into_owned(),
+                category.to_owned(),
+            ));
             if let Some(stats) = stats {
                 entry.facts.push((
                     names.text("Weight").into_owned(),
@@ -60,7 +61,7 @@ pub(super) fn items(sources: &Sources) -> Vec<Entry> {
                 }
             }
             effects::item_effects(&mut entry, sources, def.id);
-            (category.to_owned(), entry)
+            (catalog::group_order(def.group), entry)
         })
         .collect();
     list.sort_by(|(a, x), (b, y)| a.cmp(b).then_with(|| x.title.cmp(&y.title)));

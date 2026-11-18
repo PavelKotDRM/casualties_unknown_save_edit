@@ -37,21 +37,9 @@ pub fn strip_rich_text(s: &str) -> String {
     out
 }
 
-/// Icon for an item category.
-pub fn category_icon(category: &str) -> &'static str {
-    match category {
-        "medical" => "✚",
-        "drug" => "💊",
-        "food" => "🍞",
-        "water" => "💧",
-        "container" => "🎒",
-        "tool" => "🔧",
-        "utility" => "🔦",
-        "trash" => "🗑",
-        "custom" => "★",
-        "unobtainable" => "⛔",
-        _ => "📦",
-    }
+/// Icon of an item group (see [`crate::catalog::ITEM_GROUPS`]).
+pub fn group_icon(group: &str) -> &'static str {
+    crate::catalog::group(group).icon
 }
 
 pub fn file_name(path: &Path) -> String {

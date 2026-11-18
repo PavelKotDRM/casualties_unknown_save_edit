@@ -27,7 +27,7 @@ mod widgets;
 
 pub use colors::{quality, quality_color, value_color};
 pub use names::Names;
-pub use text::{category_icon, fmt_num, prettify_id, strip_rich_text};
+pub use text::{fmt_num, group_icon, prettify_id, strip_rich_text};
 pub use widgets::{
     bounded_window, card, field_row, gauge_bar, generic_row, mini_gauge, number_editor,
     other_fields, section_heading,

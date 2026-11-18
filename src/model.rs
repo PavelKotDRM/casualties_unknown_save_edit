@@ -78,6 +78,7 @@ mod tests {
                     name: "Synthetic character",
                     base_skills: [17, 4, 0],
                     gain_multipliers: [1.0, 1.0, 0.5],
+                    height_multiplier: Some(1.0),
                 };
                 3
             ],

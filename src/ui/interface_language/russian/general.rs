@@ -190,7 +190,10 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Unknown" => Some("Неизвестно"),
         "Unknown layer" => Some("Неизвестный этаж"),
         "Playable character (`character`)." => Some("Игровой персонаж (`character`)."),
-        "Character height." => Some("Рост персонажа."),
+        "Character height. The game rolls it from a range scaled by the character's size." => Some(
+            "Рост персонажа. Игра выбирает его случайно из диапазона, масштабированного по размеру персонажа.",
+        ),
+        "game range:" => Some("в игре:"),
         "Character age in years." => Some("Возраст персонажа в годах."),
         "Experiment number shown in game." => Some("Номер эксперимента в игре."),
         "Character generation version." => Some("Версия создания персонажа."),

@@ -15,7 +15,7 @@ mod summary;
 pub use backup::*;
 pub use file::SaveFile;
 pub use format::{SaveFormat, decode, encode, to_pretty_json, validate};
-pub use new_game::{can_create_new_game, new_game_data, try_new_game_data};
+pub use new_game::{can_create_new_game, new_game_data, roll_identity, try_new_game_data};
 pub use summary::SaveSummary;
 
 pub const SAVE_FILE_NAME: &str = "save.sv";

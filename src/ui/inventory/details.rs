@@ -10,7 +10,7 @@ use egui::{ProgressBar, RichText, Ui};
 use serde_json::{Map, Value, json};
 
 use super::{
-    InventoryState, Names, card, category_icon, colors, component_short_name, holder_rules,
+    InventoryState, Names, card, colors, component_short_name, group_icon, holder_rules,
     is_hand_slot, item_wear_slot, items, location_combo, missing_wear_limb, row_label,
 };
 use crate::catalog;
@@ -135,7 +135,7 @@ fn ammunition_controls(
 fn header(ui: &mut Ui, names: Names, id: &str, def: Option<&catalog::ItemDef>) {
     ui.heading(format!(
         "{} {}",
-        def.map_or("❓", |d| category_icon(d.category)),
+        def.map_or("❓", |d| group_icon(d.group)),
         names.item(id)
     ));
     if let Some(d) = names.item_description(id) {
@@ -143,9 +143,11 @@ fn header(ui: &mut Ui, names: Names, id: &str, def: Option<&catalog::ItemDef>) {
     }
     if let Some(d) = def {
         ui.weak(format!(
-            "{} {}{}{}",
+            "{} {} ({} {}){}{}",
             names.text("Category:"),
-            names.text(d.category),
+            names.text(catalog::group(d.group).label),
+            names.text("Game category:"),
+            d.category,
             if d.wear_slot.is_empty() {
                 String::new()
             } else {

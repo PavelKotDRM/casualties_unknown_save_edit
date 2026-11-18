@@ -11,6 +11,10 @@ pub fn can_create_new_game() -> bool {
         && !metadata.characters.is_empty()
         && metadata.experience.is_some()
         && metadata.character_identity.is_some()
+        && metadata
+            .characters
+            .iter()
+            .all(|character| character.height_multiplier.is_some())
         && metadata.mood_history_length.is_some()
         && schema::run_settings_for_preset(metadata.presets.first().map_or("", |preset| preset.id))
             .is_some()
@@ -23,7 +27,6 @@ pub fn try_new_game_data() -> Result<Value, SaveError> {
         return Err(unavailable());
     }
     let metadata = runtime::metadata();
-    let identity = metadata.character_identity.ok_or_else(unavailable)?;
     let mut root: Map<_, _> = metadata.root_defaults.clone().into_iter().collect();
     let fields = |specs: &[schema::FieldSpec],
                   defaults: &std::collections::BTreeMap<String, Value>|
@@ -73,9 +76,6 @@ pub fn try_new_game_data() -> Result<Value, SaveError> {
     let mut limb = fields(&metadata.limb_fields, &metadata.limb_defaults)?;
     // Missing members deserialize to the default value of the game's struct.
     limb.insert("prostheticInfo".into(), json!({}));
-    // `SaveInfo.character` has no initializer, so it is absent from the
-    // constructor defaults; the skills above belong to character 0.
-    root.insert("character".into(), 0.into());
     root.insert("body".into(), body.into());
     root.insert(
         "limbs".into(),
@@ -96,7 +96,8 @@ pub fn try_new_game_data() -> Result<Value, SaveError> {
             metadata.mood_history_length.ok_or_else(unavailable)?
         ]),
     );
-    for (key, value) in ["cHeight", "cAge", "cId", "cVer"].into_iter().zip(identity) {
+    for (index, key) in schema::IDENTITY_KEYS.into_iter().enumerate() {
+        let value = roll_identity(index, 0).ok_or_else(unavailable)?;
         root.insert(key.into(), value.into());
     }
     root.insert(
@@ -109,4 +110,14 @@ pub fn try_new_game_data() -> Result<Value, SaveError> {
 /// Generates a new save or reports unsupported installation metadata.
 pub fn new_game_data() -> Result<Value, SaveError> {
     try_new_game_data()
+}
+
+/// Rolls `schema::IDENTITY_KEYS[key]` for a run started as `character`, like
+/// the game's `PlayerCamera.Start` does.
+pub fn roll_identity(key: usize, character: usize) -> Option<i64> {
+    use std::hash::{BuildHasher, RandomState};
+    let range = schema::identity_range(key, character)?;
+    let span = u64::try_from(range.end().checked_sub(*range.start())?).ok()? + 1;
+    let random = RandomState::new().hash_one(std::time::SystemTime::now());
+    Some(range.start() + (random % span) as i64)
 }

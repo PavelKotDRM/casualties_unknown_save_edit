@@ -41,7 +41,7 @@ pub struct Metadata {
     pub skill_offsets: BTreeMap<String, f32>,
     pub skill_derived: BTreeMap<String, ScalarProgram>,
     pub mood_history_length: Option<usize>,
-    pub character_identity: Option<[i64; 4]>,
+    pub character_identity: Option<[[i64; 2]; 4]>,
     pub experience: Option<ScalarProgram>,
     pub carry_capacity: Option<ScalarProgram>,
     pub minimum_item_weight: Option<f32>,
@@ -128,6 +128,7 @@ pub(super) fn parse(
             .map(|(id, item)| ItemDef {
                 id: intern(id),
                 category: intern(&item.category),
+                group: "other",
                 wear_slot: intern(item.wear_slot.as_deref().unwrap_or("")),
                 capacity: item.liquid_capacity.unwrap_or(0.0),
             })
@@ -215,9 +216,8 @@ pub(super) fn parse(
                         (reader.number(window[0]), reader.number(window[1]))
                     && min < max
                 {
-                    // A deterministic, valid value in each game-defined
-                    // random interval; editor-created runs need not be random.
-                    values.push(min as i64);
+                    // `Random.Range(min, max)` with an exclusive maximum.
+                    values.push([min as i64, max as i64]);
                 }
             }
             if values.len() == 4 {
@@ -395,23 +395,24 @@ pub(super) fn constructor_defaults(
                 },
             );
         }
-        for entry in reader.assembly.types().iter() {
-            let ty = entry.value();
-            if ty.name != owner {
-                continue;
-            }
-            for field in ty.fields().filter(|field| !field.flags.is_static()) {
-                let zero = match field.signature.base {
-                    TypeSignature::I4 => serde_json::json!(0),
-                    TypeSignature::R4 | TypeSignature::R8 => serde_json::json!(0.0),
-                    TypeSignature::Boolean => serde_json::json!(false),
-                    TypeSignature::String => serde_json::Value::Null,
-                    _ => continue,
-                };
-                let value = defaults.entry(field.name.clone()).or_insert(zero);
-                if matches!(field.signature.base, TypeSignature::Boolean) && !value.is_boolean() {
-                    *value = serde_json::json!(value.as_f64().is_some_and(|value| value != 0.0));
-                }
+    }
+    // Fields the constructor leaves alone still serialize with C#'s zero value.
+    for entry in reader.assembly.types().iter() {
+        let ty = entry.value();
+        if ty.name != owner {
+            continue;
+        }
+        for field in ty.fields().filter(|field| !field.flags.is_static()) {
+            let zero = match field.signature.base {
+                TypeSignature::I4 => serde_json::json!(0),
+                TypeSignature::R4 | TypeSignature::R8 => serde_json::json!(0.0),
+                TypeSignature::Boolean => serde_json::json!(false),
+                TypeSignature::String => serde_json::Value::Null,
+                _ => continue,
+            };
+            let value = defaults.entry(field.name.clone()).or_insert(zero);
+            if matches!(field.signature.base, TypeSignature::Boolean) && !value.is_boolean() {
+                *value = serde_json::json!(value.as_f64().is_some_and(|value| value != 0.0));
             }
         }
     }
@@ -721,6 +722,7 @@ fn parse_characters(
             name: intern(locale.and_then(|locale| locale.other(&key)).unwrap_or(&key)),
             base_skills: base.map(|value| value as i64),
             gain_multipliers: multipliers.map(f64::from),
+            height_multiplier: None,
         });
     }
     if let Some(method) = reader.method("Skills", "Setup") {
