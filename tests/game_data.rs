@@ -134,6 +134,7 @@ fn runtime_catalogues_and_rules_come_from_the_installed_game() {
         save["body"]["skills"][metadata.skills[0].key],
         metadata.characters[0].base_skills[0]
     );
+    assert_eq!(save["character"], 0, "new save must have a selectable character");
     assert_eq!(save["items"], serde_json::json!([]));
     assert_eq!(
         save["lastHappiness"].as_array().unwrap().len(),

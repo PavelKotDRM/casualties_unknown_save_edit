@@ -73,6 +73,9 @@ pub fn try_new_game_data() -> Result<Value, SaveError> {
     let mut limb = fields(&metadata.limb_fields, &metadata.limb_defaults)?;
     // Missing members deserialize to the default value of the game's struct.
     limb.insert("prostheticInfo".into(), json!({}));
+    // `SaveInfo.character` has no initializer, so it is absent from the
+    // constructor defaults; the skills above belong to character 0.
+    root.insert("character".into(), 0.into());
     root.insert("body".into(), body.into());
     root.insert(
         "limbs".into(),

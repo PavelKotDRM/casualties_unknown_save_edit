@@ -1,6 +1,6 @@
 [package]
 name = "cu_save_editor"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Save editor and wiki for the game Casualties Unknown"
 repository = "https://github.com/PavelKotDRM/casualties_unknown_save_edit"
@@ -14,7 +14,7 @@ egui = "0.37"
 flate2 = "1"
 rfd = "0.18"
 serde_json = { version = "1", features = ["preserve_order"] }
-unity-rs-core = "0.6.2"
+unity-rs-core = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
