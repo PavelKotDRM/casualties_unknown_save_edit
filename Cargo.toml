@@ -1,6 +1,6 @@
 [package]
 name = "cu_save_editor"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "Save editor and wiki for the game Casualties Unknown"
 repository = "https://github.com/PavelKotDRM/casualties_unknown_save_edit"

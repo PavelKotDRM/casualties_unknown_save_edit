@@ -49,7 +49,7 @@ impl EditorApp {
                 ui::health::show(ui, data, names);
             }
             Tab::Limbs => {
-                ui::limbs::show(ui, data, names, &mut self.limbs);
+                ui::limbs::show(ui, data, names, &self.item_stats, &mut self.limbs);
             }
             Tab::Inventory => {
                 ui::inventory::show(ui, data, names, &self.item_stats, &mut self.inventory);

@@ -2,7 +2,7 @@
 
 use super::super::{Names, colors, fmt_num, quality_color, value_color};
 use super::geometry::{FIGURE, limb_rect};
-use super::{limb_condition, limb_problems};
+use super::limb_condition;
 use crate::json::{get_bool, get_f64};
 use crate::schema;
 use egui::{Color32, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
@@ -138,9 +138,9 @@ pub fn body_figure(
                     }
                 }
             }
-            let problems = limb_problems(limb);
+            let problems = super::localized_problems(limb, names);
             if !problems.is_empty() {
-                ui.colored_label(colors::WARN, problems.join(", "));
+                ui.colored_label(colors::WARN, problems);
             }
         });
     }

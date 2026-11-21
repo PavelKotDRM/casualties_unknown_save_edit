@@ -6,6 +6,44 @@ use cu_save_editor::game_info::GameInfo;
 use cu_save_editor::schema;
 
 #[test]
+fn russian_interface_translates_installed_health_and_limb_fields() {
+    let Some(game_dir) = std::env::var_os("CU_GAME_DIR") else {
+        eprintln!("skipped: CU_GAME_DIR is not set");
+        return;
+    };
+    let game = cu_save_editor::game_data::load_game_data(Path::new(&game_dir)).unwrap();
+    let lang_dir = Path::new(&game_dir)
+        .join("CasualtiesUnknown_Data")
+        .join("Lang");
+    let english = cu_save_editor::locale::Locale::load(&lang_dir.join("EN.json")).unwrap();
+    let russian = cu_save_editor::locale::Locale::load(&lang_dir.join("ru-RU.json")).unwrap();
+    for locale in [None, Some(&english), Some(&russian)] {
+        let names = cu_save_editor::ui::Names {
+            locale,
+            interface_language: cu_save_editor::ui::InterfaceLanguage::Russian,
+        };
+        let missing: Vec<_> = game
+            .metadata
+            .body_groups
+            .iter()
+            .flat_map(|group| group.fields.iter())
+            .chain(game.metadata.limb_fields.iter())
+            .filter_map(|field| {
+                let label = names.field(field);
+                (!label
+                    .chars()
+                    .any(|c| ('А'..='я').contains(&c) || c == 'ё' || c == 'Ё'))
+                .then(|| format!("{}: {label}", field.key))
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "Untranslated health fields: {missing:?}"
+        );
+    }
+}
+
+#[test]
 fn runtime_catalogues_and_rules_come_from_the_installed_game() {
     let Some(game_dir) = std::env::var_os("CU_GAME_DIR") else {
         eprintln!("skipped: CU_GAME_DIR is not set");
@@ -13,6 +51,72 @@ fn runtime_catalogues_and_rules_come_from_the_installed_game() {
     };
     let data = cu_save_editor::game_data::load_game_data(Path::new(&game_dir)).unwrap();
     let metadata = &data.metadata;
+    let protection = metadata.protection.as_ref().unwrap_or_else(|| {
+        panic!(
+            "Protection metadata unavailable: {:?}",
+            metadata.protection_error
+        )
+    });
+    assert_eq!(protection.base, 1.0);
+    assert_eq!(protection.minimum, 0.1);
+    assert!(
+        protection
+            .secondary_limbs
+            .values()
+            .any(|limbs| !limbs.is_empty())
+    );
+    assert_eq!(protection.character_bonus.len(), metadata.characters.len());
+    assert_eq!(protection.character_bonus[&2], 0.2);
+    assert!(protection.secondary_limbs["hoodie"].contains(&"UpTorso".to_owned()));
+    assert!(protection.secondary_limbs["hoodie"].contains(&"HandF".to_owned()));
+    assert!(protection.secondary_limbs["riothelmet"].is_empty());
+    let limbs: Vec<_> = metadata
+        .limbs
+        .iter()
+        .map(|_| serde_json::json!({"dismembered": false}))
+        .collect();
+    let save = serde_json::json!({
+        "character": 2, "body": {"weightOffset": 10.0},
+        "runSettings": [
+            {"Item1": "bonuslimbarmor", "Item2": "0.5"},
+            {"Item1": "insulationmultiplier", "Item2": "1.25"}
+        ],
+        "limbs": limbs, "items": [
+            {"id": "hoodie", "slot": -1, "wearSlot": "outertorso", "condition": 0.2},
+            {"id": "riothelmet", "slot": -1, "wearSlot": "hat", "condition": 0.9}
+        ]
+    });
+    let calculated =
+        cu_save_editor::model::calculate_protection(&save, &data.items, metadata).unwrap();
+    let index = |name| {
+        metadata
+            .limbs
+            .iter()
+            .position(|limb| limb.object == name)
+            .unwrap()
+    };
+    assert!((calculated.limbs[index("Head")].divisor - 3.7).abs() < 0.0001);
+    assert!((calculated.limbs[index("UpTorso")].divisor - 2.2).abs() < 0.0001);
+    assert!((calculated.limbs[index("HandF")].divisor - 1.95).abs() < 0.0001);
+    assert!((calculated.clothing_insulation - 0.8).abs() < 0.0001);
+    let insulation = cu_save_editor::model::calculate_insulation(
+        &save,
+        calculated.clothing_insulation,
+        metadata,
+    )
+    .unwrap();
+    assert!((insulation[0] - 1.75).abs() < 0.0001);
+    assert!((insulation[1] - 3.0).abs() < 0.0001);
+    let mut cold_save = save.clone();
+    cold_save["character"] = serde_json::json!(0);
+    cold_save["body"]["weightOffset"] = serde_json::json!(-80.0);
+    cold_save["runSettings"][1]["Item2"] = serde_json::json!("0.5");
+    let insulation =
+        cu_save_editor::model::calculate_insulation(&cold_save, 0.0, metadata).unwrap();
+    assert_eq!(insulation[0], 0.5, "native minimum insulation");
+    assert!((insulation[1] - 0.6).abs() < 0.0001);
+    cold_save["runSettings"][1]["Item2"] = serde_json::json!("invalid");
+    assert!(cu_save_editor::model::calculate_insulation(&cold_save, 0.0, metadata).is_err());
     let assembly = dotscope::CilObject::from_path_with_validation(
         Path::new(&game_dir)
             .join("CasualtiesUnknown_Data")

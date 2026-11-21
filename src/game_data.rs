@@ -12,6 +12,7 @@ mod il;
 pub mod metadata;
 pub mod moodles;
 pub mod program;
+pub mod protection;
 pub mod runtime;
 
 pub use effects::{
@@ -97,6 +98,10 @@ pub fn load_game_data(game_dir: &Path) -> Result<GameData, String> {
         locale.as_ref(),
     );
     assets::player(&data_dir, &assembly, &mut metadata, locale.as_ref())?;
+    match protection::load(&data_dir, &assembly, &metadata, &items) {
+        Ok(protection) => metadata.protection = Some(protection),
+        Err(error) => metadata.protection_error = Some(error),
+    }
     metadata::apply_awake_defaults(&assembly, &mut metadata);
     metadata::refresh_targets(&mut metadata);
     match assets::ammunition(&data_dir, &assembly) {

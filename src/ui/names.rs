@@ -30,7 +30,8 @@ impl Names<'_> {
         }
     }
 
-    /// Game label when available, otherwise a translated readable identifier.
+    /// Game label when available, translated if it matches an interface string;
+    /// otherwise a translated readable identifier.
     pub fn stat(&self, key: &str) -> String {
         let stem = key
             .strip_suffix("Amount")
@@ -40,7 +41,7 @@ impl Names<'_> {
             .locale
             .and_then(|locale| locale.other(key).or_else(|| locale.moodle_name(stem)))
         {
-            return strip_rich_text(text);
+            return self.text(&strip_rich_text(text)).into_owned();
         }
         self.text(&humanize(stem)).into_owned()
     }
@@ -309,5 +310,41 @@ mod tests {
             good: schema::Good::Neutral,
         };
         assert_eq!(names.field(&field), "Выносливость");
+    }
+
+    #[test]
+    fn game_stat_labels_use_interface_translations_when_available() {
+        let english =
+            Locale::from_json(r#"{"other": {"bloodOxygen": "<b>Blood oxygen</b>"}}"#).unwrap();
+        let russian = Locale::from_json(r#"{"other": {"bloodOxygen": "Кислород"}}"#).unwrap();
+        let pack = crate::interface_packs::InterfacePack {
+            code: "custom".into(),
+            name: "Custom".into(),
+            translations: [("Blood oxygen".into(), "Custom oxygen".into())].into(),
+        };
+        for (locale, language, expected) in [
+            (&english, InterfaceLanguage::English, "Blood oxygen"),
+            (
+                &english,
+                InterfaceLanguage::Russian,
+                "Насыщение крови кислородом",
+            ),
+            (&russian, InterfaceLanguage::Russian, "Кислород"),
+            (
+                &english,
+                InterfaceLanguage::External(&pack),
+                "Custom oxygen",
+            ),
+            (&russian, InterfaceLanguage::English, "Кислород"),
+        ] {
+            assert_eq!(
+                Names {
+                    locale: Some(locale),
+                    interface_language: language,
+                }
+                .stat("bloodOxygen"),
+                expected
+            );
+        }
     }
 }

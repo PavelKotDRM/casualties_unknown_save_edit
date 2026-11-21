@@ -50,6 +50,8 @@ pub struct Metadata {
     pub experience: Option<ScalarProgram>,
     pub carry_capacity: Option<ScalarProgram>,
     pub minimum_item_weight: Option<f32>,
+    pub protection: Option<super::protection::ProtectionData>,
+    pub protection_error: Option<String>,
 }
 
 pub(super) struct Reader<'a> {

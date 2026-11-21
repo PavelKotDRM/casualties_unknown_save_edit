@@ -105,8 +105,9 @@ only when the document has unsaved changes.
   Status cards use localized names and the installed game's background palette
   (including its neutral and special colours), not editor-authored medical
   classifications. Dynamic or unresolved severity uses the native neutral shade.
-  Item/liquid stat names prefer the game's language file; missing labels use the
-  selected interface language, including built-in Russian stat translations.
+  Item/liquid stat names prefer the game's language file; matching interface
+  strings and missing labels use the selected interface language, including
+  built-in Russian stat translations.
   Unknown fields fall back to readable names. Effect colours use game-derived
   healthy bounds and status guards. Ambiguous changes, such as raising an already
   unknown body temperature, remain neutral.
@@ -202,6 +203,16 @@ ammunition component defaults from resource prefabs. Empty-by-default containers
 stay empty; weapons are not automatically loaded beyond their game defaults.
 Contents remain editable in the item details. Liquid fill levels are included
 when checking whether a new item fits inside a container.
+
+The Limbs tab calculates protection for every body part from the game's worn
+item coverage (including secondary limbs), character and run bonuses, and
+prosthetics. Armor is shown as the game's damage divisor and the resulting
+percentage of damage for effects that actually use armor; it is not a universal
+resistance. Clothing insulation is a whole-body contribution in the game,
+not per-limb protection. Total insulation is shown both with and without a
+sleeping bag because the game does not save that temporary state. The
+calculation reports missing or invalid data
+instead of assuming equipment or inventing separate damage-type resistances.
 
 Liquid edits update condition using the game's total-volume/capacity formula;
 the condition control is read-only for these items. Fixed-cost consumables have

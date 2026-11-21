@@ -982,6 +982,129 @@ pub(super) fn player(
     Ok(())
 }
 
+pub(super) struct ProtectionPrefabs {
+    pub secondary_limbs: HashMap<String, Vec<String>>,
+    pub character_bonus: HashMap<usize, f32>,
+}
+
+pub(super) fn protection_prefabs(
+    data_dir: &Path,
+    assembly: &CilObject,
+    wearable_ids: &HashSet<String>,
+) -> Result<ProtectionPrefabs, String> {
+    let studio = Studio::open(data_dir).map_err(|error| error.to_string())?;
+    let ids = resource_item_ids(&studio)?;
+    let mut coverage: HashMap<String, Vec<String>> = ids
+        .values()
+        .filter(|id| wearable_ids.contains(*id))
+        .map(|id| (id.clone(), Vec::new()))
+        .collect();
+    if coverage.len() != wearable_ids.len() {
+        return Err("Some wearable resource prefabs are unavailable".into());
+    }
+    let mut seen = HashSet::new();
+    let fields = prefab_fields(assembly, "Wearable")?;
+    for object in studio
+        .objects()
+        .filter(|o| o.class_id() == 114 && o.name() == Some("Wearable"))
+    {
+        let bytes = object
+            .read_raw(1024 * 1024)
+            .map_err(|error| error.to_string())?;
+        let mut cursor = Cursor {
+            bytes: &bytes,
+            offset: 0,
+        };
+        let (file, path) = cursor.reference().ok_or("Invalid wearable reference")?;
+        let Some(id) = (file == 0)
+            .then(|| ids.get(&(object.file_index(), path)))
+            .flatten()
+        else {
+            continue;
+        };
+        if !wearable_ids.contains(id) {
+            continue;
+        }
+        cursor.offset = mono_behaviour_data_offset(&bytes).ok_or("Invalid wearable header")?;
+        let mut limbs = None;
+        for (name, ty) in &fields {
+            let value = cursor
+                .value(assembly, ty)
+                .ok_or_else(|| format!("Cannot decode wearable field {name} for {id}"))?;
+            if name == "secondaryLimbs" {
+                limbs = Some(
+                    value
+                        .as_array()
+                        .ok_or("Invalid secondary limb list")?
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .map(str::to_owned)
+                                .ok_or("Invalid secondary limb")
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                );
+                break;
+            }
+        }
+        let limbs = limbs.ok_or("Missing wearable secondary limbs")?;
+        if !seen.insert(id.clone()) && coverage.get(id) != Some(&limbs) {
+            return Err(format!("Conflicting wearable coverage for {id}"));
+        }
+        coverage.insert(id.clone(), limbs);
+    }
+    let fields = prefab_fields(assembly, "Body")?;
+    let mut bonuses = HashMap::new();
+    for object in studio
+        .objects()
+        .filter(|o| o.class_id() == 114 && o.name() == Some("Body"))
+    {
+        let bytes = object
+            .read_raw(4 * 1024 * 1024)
+            .map_err(|error| error.to_string())?;
+        let Some(offset) = mono_behaviour_data_offset(&bytes) else {
+            continue;
+        };
+        let mut cursor = Cursor {
+            bytes: &bytes,
+            offset,
+        };
+        let mut character = None;
+        let mut bonus = None;
+        for (name, ty) in &fields {
+            let Some(value) = cursor.value(assembly, ty) else {
+                break;
+            };
+            if name == "charType" {
+                character = value.as_u64().and_then(|value| usize::try_from(value).ok());
+            }
+            if name == "bonusLimbProtection" {
+                bonus = value
+                    .as_f64()
+                    .filter(|value| value.is_finite())
+                    .map(|value| value as f32);
+            }
+        }
+        if let (Some(character), Some(bonus)) = (character, bonus) {
+            if bonuses
+                .get(&character)
+                .is_some_and(|previous| *previous != bonus)
+            {
+                return Err(format!("Conflicting protection for character {character}"));
+            }
+            bonuses.insert(character, bonus);
+        }
+    }
+    if bonuses.is_empty() {
+        return Err("Character protection bonuses are unavailable".into());
+    }
+    Ok(ProtectionPrefabs {
+        secondary_limbs: coverage,
+        character_bonus: bonuses,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

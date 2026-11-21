@@ -218,8 +218,9 @@ impl ScalarProgram {
                             pc = step.target?;
                         }
                     }
-                    "ble" | "ble.s" | "blt" | "blt.s" | "bge" | "bge.s" | "bgt" | "bgt.s"
-                    | "beq" | "beq.s" | "bne.un" | "bne.un.s" => {
+                    "ble" | "ble.s" | "ble.un" | "ble.un.s" | "blt" | "blt.s" | "blt.un"
+                    | "blt.un.s" | "bge" | "bge.s" | "bge.un" | "bge.un.s" | "bgt" | "bgt.s"
+                    | "bgt.un" | "bgt.un.s" | "beq" | "beq.s" | "bne.un" | "bne.un.s" => {
                         let right = stack.pop()?.number()?;
                         let left = stack.pop()?.number()?;
                         let branch = match code.split('.').next()? {
@@ -230,7 +231,7 @@ impl ScalarProgram {
                             "beq" => left == right,
                             _ => left != right,
                         };
-                        if branch {
+                        if branch || (code.contains(".un") && (left.is_nan() || right.is_nan())) {
                             pc = step.target?;
                         }
                     }

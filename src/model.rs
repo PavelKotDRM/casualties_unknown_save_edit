@@ -12,6 +12,7 @@ mod inventory;
 mod item_state;
 mod load;
 pub mod placement;
+mod protection;
 mod skills;
 
 pub use ammunition::{AmmunitionStatus, ChamberState, ammunition_status, reload_ammunition};
@@ -29,6 +30,7 @@ pub use load::{
     CarryLoad, ContainerSpace, ItemWeights, PhysicalLoad, carry_load, container_space,
     item_weights, physical_load,
 };
+pub use protection::{LimbProtection, Protection, calculate_insulation, calculate_protection};
 pub use skills::{set_skill_level, setup_character_skills, skill_progress};
 
 #[cfg(test)]
