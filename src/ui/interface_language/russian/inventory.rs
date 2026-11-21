@@ -5,6 +5,12 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Equal fill percentage" => Some("Одинаковый процент заполнения"),
         "Move favourites" => Some("Перемещать избранное"),
         "Balance containers" => Some("Сбалансировать контейнеры"),
+        "Repair & charge all" => Some("Починить и зарядить всё"),
+        "Repairs items and fully charges installed batteries. Liquid levels are unchanged." => {
+            Some(
+                "Чинит предметы и полностью заряжает установленные батареи. Уровень жидкости не меняется.",
+            )
+        }
         "{count} items moved" => Some("Перемещено предметов: {count}"),
         "Equipped items and compatible contents of specialized containers stay in place. Redistribute the remaining items only. If an optimum cannot be proven within the search limit, nothing is changed." => {
             Some(

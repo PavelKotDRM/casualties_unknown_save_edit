@@ -126,6 +126,18 @@ pub fn show(
                 );
             }
         }
+        if ui
+            .button(names.text("Repair & charge all"))
+            .on_hover_text(names.text("Repairs items and fully charges installed batteries. Liquid levels are unchanged."))
+            .clicked()
+        {
+            match model::repair_and_charge_all(data) {
+                Ok(repaired) => changed |= repaired > 0,
+                Err(error) => {
+                    super::operation_result(ui, Err(error));
+                }
+            }
+        }
         ui.separator();
         ui.label(format!("{count} {}", names.text("items")));
         ui.weak(format!(

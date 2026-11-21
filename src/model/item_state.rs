@@ -132,6 +132,41 @@ pub fn set_battery_charge(item: &mut Value, charge: f64, capacity: f64) -> Resul
     Ok(true)
 }
 
+/// Repairs condition-based items and fully charges installed batteries.
+/// Liquid condition remains derived from the amount of liquid in the item.
+pub fn repair_and_charge_all(data: &mut Value) -> Result<usize, String> {
+    let mut updated = data.clone();
+    let components = match updated.get("itemComponents") {
+        Some(Value::Array(components)) => Some(components.clone()),
+        Some(_) => return Err("Invalid item components".into()),
+        None => None,
+    };
+    let items = updated
+        .get_mut("items")
+        .and_then(Value::as_array_mut)
+        .ok_or("This save has no items array")?;
+    let metadata = crate::game_data::runtime::metadata();
+    let mut changed = 0;
+    for (index, item) in items.iter_mut().enumerate() {
+        let saved_components = components
+            .as_ref()
+            .and_then(|components| components.get(index))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let state = item_content_state(item, &saved_components, metadata)?;
+        let before = item.clone();
+        if let Some(capacity) = state.battery_capacity.filter(|capacity| *capacity > 0.0) {
+            set_battery_charge(item, capacity, capacity)?;
+        } else if state.condition.is_none() {
+            let object = item.as_object_mut().ok_or("Invalid item object")?;
+            object.insert("condition".into(), json!(1.0));
+        }
+        changed += usize::from(*item != before);
+    }
+    *data = updated;
+    Ok(changed)
+}
+
 pub fn remaining_uses(condition: f32, rule: ConditionUse) -> Result<u32, String> {
     if !condition.is_finite()
         || !rule.cost.is_finite()
@@ -338,5 +373,68 @@ mod tests {
         synchronize_item_state(&mut item, &mut components, &metadata).unwrap();
         assert_eq!(item["condition"], 0.5);
         assert_eq!(components, json!({}));
+    }
+
+    #[test]
+    fn bulk_repair_charges_batteries_and_preserves_liquid_levels() {
+        let battery = component_key("BatteryItem");
+        let water = component_key("WaterContainerItem");
+        let _metadata = crate::game_data::runtime::scoped_for_test(Metadata {
+            items: vec![ItemDef {
+                id: "drink",
+                category: "",
+                group: "",
+                wear_slot: "",
+                capacity: 500.0,
+            }],
+            battery_charges: [("small".into(), 50.0)].into(),
+            battery_limits: [("light".into(), 100.0)].into(),
+            ..Default::default()
+        });
+        let mut data = json!({
+            "items": [
+                {"id": "tool", "condition": 0.3},
+                {"id": "light", "condition": 0.2},
+                {"id": "light", "condition": 0.0},
+                {"id": "drink", "condition": 0.5}
+            ],
+            "itemComponents": [
+                {},
+                {&battery: {"batteryType": "small", "maxCharge": 1.0}},
+                {&battery: {"batteryType": "", "maxCharge": 0.0}},
+                {&water: {"stack": [{"liquidId": "water", "amount": 250.0}]}}
+            ]
+        });
+
+        assert_eq!(repair_and_charge_all(&mut data).unwrap(), 2);
+        assert_eq!(data["items"][0]["condition"], 1.0);
+        assert_eq!(data["items"][1]["condition"], 1.0);
+        assert_eq!(data["items"][2]["condition"], 0.0);
+        assert_eq!(data["items"][3]["condition"], 0.5);
+        assert_eq!(data["itemComponents"][1][&battery]["maxCharge"], 1.0);
+        assert_eq!(
+            data["itemComponents"][3][&water]["stack"][0]["amount"],
+            250.0
+        );
+    }
+
+    #[test]
+    fn bulk_repair_is_atomic_when_item_contents_are_invalid() {
+        let battery = component_key("BatteryItem");
+        let _metadata = crate::game_data::runtime::scoped_for_test(metadata());
+        let mut data = json!({
+            "items": [
+                {"id": "tool", "condition": 0.3},
+                {"id": "light", "condition": 0.2}
+            ],
+            "itemComponents": [
+                {},
+                {&battery: {"batteryType": "unknown", "maxCharge": 50.0}}
+            ]
+        });
+        let original = data.clone();
+
+        assert!(repair_and_charge_all(&mut data).is_err());
+        assert_eq!(data, original);
     }
 }

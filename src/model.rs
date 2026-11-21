@@ -23,8 +23,8 @@ pub use inventory::{
     move_within_group, new_item, new_item_components, remove_item,
 };
 pub use item_state::{
-    ItemContentState, battery_capacity, item_content_state, remaining_uses, set_battery_charge,
-    set_remaining_uses, synchronize_item_state,
+    ItemContentState, battery_capacity, item_content_state, remaining_uses, repair_and_charge_all,
+    set_battery_charge, set_remaining_uses, synchronize_item_state,
 };
 pub use load::{
     CarryLoad, ContainerSpace, ItemWeights, PhysicalLoad, carry_load, container_space,
