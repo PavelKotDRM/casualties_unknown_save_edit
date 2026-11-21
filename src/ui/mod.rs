@@ -58,6 +58,107 @@ mod tests {
 
     #[test]
     #[allow(deprecated)]
+    fn health_and_vitals_render_readable_labels_in_each_interface_language() {
+        let _metadata =
+            crate::game_data::runtime::scoped_for_test(crate::game_data::metadata::Metadata {
+                body_groups: vec![schema::FieldGroup {
+                    title: "Body",
+                    icon: "",
+                    fields: &[
+                        schema::FieldSpec {
+                            key: "bloodOxygen",
+                            label: "bloodOxygen",
+                            help: "",
+                            kind: schema::Kind::Gauge,
+                            min: 0.0,
+                            max: 100.0,
+                            unit: "",
+                            good: schema::Good::High,
+                        },
+                        schema::FieldSpec {
+                            key: "heartRate",
+                            label: "heartRate",
+                            help: "",
+                            kind: schema::Kind::Gauge,
+                            min: 0.0,
+                            max: 200.0,
+                            unit: "",
+                            good: schema::Good::Neutral,
+                        },
+                    ],
+                }],
+                ..Default::default()
+            });
+        let pack = crate::interface_packs::InterfacePack {
+            code: "custom".into(),
+            name: "Custom".into(),
+            translations: [
+                ("Blood oxygen".into(), "Translated oxygen".into()),
+                ("Heart rate".into(), "Translated pulse".into()),
+            ]
+            .into(),
+        };
+        for (language, labels) in [
+            (InterfaceLanguage::English, ["Blood oxygen", "Heart rate"]),
+            (
+                InterfaceLanguage::Russian,
+                ["Насыщение крови кислородом", "Пульс"],
+            ),
+            (
+                InterfaceLanguage::External(&pack),
+                ["Translated oxygen", "Translated pulse"],
+            ),
+        ] {
+            for health_tab in [true, false] {
+                let names = Names {
+                    locale: None,
+                    interface_language: language,
+                };
+                let mut data = serde_json::json!({
+                    "body": {"bloodOxygen": 95.0, "heartRate": 70.0}, "limbs": [], "items": []
+                });
+                let original = data.clone();
+                let context = egui::Context::default();
+                let mut output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            Vec2::new(1280.0, 820.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        if health_tab {
+                            assert!(!health::show(ui, &mut data, names));
+                        } else {
+                            assert!(!overview::show(ui, &mut data, names).changed);
+                        }
+                    },
+                );
+                output.textures_delta.clear();
+                let rendered: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| {
+                        if let egui::Shape::Text(text) = &shape.shape {
+                            Some(text.galley.text())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                for label in labels {
+                    assert!(rendered.contains(&label), "{label:?}: {rendered:?}");
+                }
+                assert!(!rendered.contains(&"bloodOxygen"));
+                assert!(!rendered.contains(&"heartRate"));
+                assert_eq!(data, original);
+            }
+        }
+    }
+
+    #[test]
+    #[allow(deprecated)]
     fn model_operation_errors_are_reported_to_the_application() {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(Default::default(), |ui| {

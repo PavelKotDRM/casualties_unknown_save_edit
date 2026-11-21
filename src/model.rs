@@ -9,6 +9,7 @@ mod ammunition;
 mod balance;
 mod health;
 mod inventory;
+mod item_state;
 mod load;
 pub mod placement;
 mod skills;
@@ -18,7 +19,11 @@ pub use balance::{BalanceRule, balance_containers};
 pub use health::{fill_needs, heal_limb, heal_limbs, restore_vitals};
 pub use inventory::{
     ItemGroup, Location, add_item, duplicate_item, group_items, move_to_location,
-    move_within_group, new_item, remove_item,
+    move_within_group, new_item, new_item_components, remove_item,
+};
+pub use item_state::{
+    ItemContentState, battery_capacity, item_content_state, remaining_uses, set_battery_charge,
+    set_remaining_uses, synchronize_item_state,
 };
 pub use load::{
     CarryLoad, ContainerSpace, ItemWeights, PhysicalLoad, carry_load, container_space,

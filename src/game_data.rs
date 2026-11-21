@@ -103,18 +103,88 @@ pub fn load_game_data(game_dir: &Path) -> Result<GameData, String> {
         Ok(ammunition) => metadata.ammunition = Some(ammunition),
         Err(error) => metadata.ammunition_error = Some(error),
     }
+    match assets::batteries(&data_dir, &assembly) {
+        Ok(batteries) => {
+            for (id, defaults) in batteries {
+                metadata
+                    .battery_limits
+                    .insert(id.clone(), defaults.max_allowed_charge);
+                metadata.item_components.insert(
+                    id,
+                    serde_json::json!({component_key("BatteryItem"): defaults.state}),
+                );
+            }
+        }
+        Err(error) => metadata.item_components_error = Some(error),
+    }
+    for (id, profile) in &effects.items {
+        if let Some(charge) = profile.max_charge {
+            metadata.battery_charges.insert(id.clone(), charge);
+        }
+        let uses: Vec<_> = profile
+            .uses
+            .iter()
+            .filter_map(|action| action.condition_use)
+            .collect();
+        if !uses.is_empty() {
+            metadata.condition_uses.insert(id.clone(), uses);
+        }
+    }
+    for (id, item) in &items {
+        if item.liquid_capacity.is_some() {
+            let Some(profile) = effects.items.get(id) else {
+                metadata.item_components_error =
+                    Some(format!("Liquid defaults for {id} are unavailable"));
+                continue;
+            };
+            let stack: Vec<_> = profile
+                .default_contents
+                .iter()
+                .map(|(liquid, amount)| serde_json::json!({"liquidId": liquid, "amount": amount}))
+                .collect();
+            metadata
+                .item_components
+                .entry(id.clone())
+                .or_insert_with(|| serde_json::json!({}))[component_key("WaterContainerItem")] =
+                serde_json::json!({"stack": stack});
+        }
+    }
+    if let Some(ammunition) = &metadata.ammunition {
+        for (id, owner, defaults) in ammunition
+            .items
+            .iter()
+            .map(|(id, item)| (id, "AmmoScript", &item.defaults))
+            .chain(
+                ammunition
+                    .guns
+                    .iter()
+                    .map(|(id, gun)| (id, "GunScript", &gun.defaults)),
+            )
+        {
+            metadata
+                .item_components
+                .entry(id.clone())
+                .or_insert_with(|| serde_json::json!({}))[component_key(owner)] =
+                serde_json::json!(defaults);
+        }
+    }
     assign_item_groups(&mut metadata, &items, &effects);
     match assets::moodle_palette(&data_dir).and_then(|palette| moodles::parse(&assembly, &palette))
     {
         Ok(moodles) => metadata.moodles = moodles,
         Err(error) => metadata.moodles_error = Some(error),
     }
+
     runtime::install(metadata.clone());
     Ok(GameData {
         items,
         effects,
         metadata,
     })
+}
+
+pub fn component_key(owner: &str) -> String {
+    format!("{owner}, Assembly-CSharp, Version=0.0.0.0, Culture=neutral, PublicKeyToken=null")
 }
 
 fn assign_item_groups(

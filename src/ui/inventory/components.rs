@@ -38,6 +38,7 @@ pub(in crate::ui::inventory) const WATER: &str =
 pub(super) fn components_editor(
     ui: &mut Ui,
     comps: &mut Map<String, Value>,
+    item: &mut Value,
     def: Option<&catalog::ItemDef>,
     names: Names,
 ) -> bool {
@@ -80,7 +81,7 @@ pub(super) fn components_editor(
             };
             changed |= match short.as_str() {
                 "WaterContainerItem" => liquid_editor(ui, obj, def, names),
-                "BatteryItem" => battery_editor(ui, obj, names),
+                "BatteryItem" => battery_editor(ui, obj, item, names),
                 _ => generic_component(ui, &key, obj),
             };
         });
@@ -227,13 +228,26 @@ fn liquid_editor(
     changed
 }
 
-fn battery_editor(ui: &mut Ui, obj: &mut Map<String, Value>, names: Names) -> bool {
+fn battery_editor(
+    ui: &mut Ui,
+    obj: &mut Map<String, Value>,
+    item: &mut Value,
+    names: Names,
+) -> bool {
     let mut changed = false;
-    if let Some(slot) = obj.get_mut("maxCharge") {
-        ui.horizontal(|ui| {
-            row_label(ui, names, "Max charge");
-            changed |= number_editor(ui, slot, 1.0);
-        });
+    let metadata = crate::game_data::runtime::metadata();
+    let id = item["id"].as_str().unwrap_or("").to_owned();
+    if metadata
+        .battery_limits
+        .get(&id)
+        .is_none_or(|limit| !limit.is_finite() || *limit <= 0.0)
+    {
+        ui.colored_label(
+            colors::BAD,
+            names
+                .text("Battery compatibility for {id} is unavailable")
+                .replace("{id}", &id),
+        );
     }
     if let Some(Value::String(kind)) = obj.get_mut("batteryType") {
         ui.horizontal(|ui| {
@@ -241,21 +255,67 @@ fn battery_editor(ui: &mut Ui, obj: &mut Map<String, Value>, names: Names) -> bo
             let before = kind.clone();
             egui::ComboBox::from_id_salt("battery_type")
                 .selected_text(if kind.is_empty() {
-                    "(none)"
+                    names.text("No battery").into_owned()
                 } else {
-                    kind.as_str()
+                    names.item(kind)
                 })
                 .show_ui(ui, |ui| {
-                    for (v, t) in [
-                        ("", "(none)"),
-                        ("smallbattery", "Small battery"),
-                        ("mediumbattery", "Medium battery"),
-                    ] {
-                        ui.selectable_value(kind, v.to_owned(), t);
+                    ui.selectable_value(kind, String::new(), names.text("No battery"));
+                    for battery in metadata.battery_charges.keys() {
+                        if let Ok(capacity) = model::battery_capacity(&id, battery, metadata) {
+                            ui.selectable_value(
+                                kind,
+                                battery.clone(),
+                                format!("{} ({})", names.item(battery), fmt_num(capacity)),
+                            );
+                        }
                     }
                 });
             changed |= *kind != before;
         });
+        if changed && kind.is_empty() {
+            obj.insert("batteryWasFavourited".into(), json!(false));
+        }
+    } else {
+        ui.colored_label(colors::BAD, names.text("Invalid battery type"));
+        changed |= generic_component(ui, "battery", obj);
+        return changed;
+    }
+    match model::battery_capacity(&id, get_str(obj, "batteryType").unwrap_or(""), metadata) {
+        Ok(capacity) => {
+            ui.horizontal(|ui| {
+                row_label(ui, names, "Max charge");
+                ui.label(fmt_num(capacity));
+            });
+            if capacity > 0.0 {
+                if let Some(condition) = item["condition"].as_f64() {
+                    ui.horizontal(|ui| {
+                        row_label(ui, names, "Charge");
+                        let mut charge = condition * capacity;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut charge)
+                                    .range(0.0..=capacity)
+                                    .speed(0.5),
+                            )
+                            .changed()
+                        {
+                            match model::set_battery_charge(item, charge, capacity) {
+                                Ok(updated) => changed |= updated,
+                                Err(error) => {
+                                    ui.colored_label(colors::BAD, names.text(&error));
+                                }
+                            }
+                        }
+                    });
+                } else {
+                    ui.colored_label(colors::BAD, names.text("Invalid item condition"));
+                }
+            }
+        }
+        Err(error) => {
+            ui.colored_label(colors::BAD, names.text(&error));
+        }
     }
     let known = |k: &str| matches!(k, "maxCharge" | "batteryType");
     let keys: Vec<String> = obj.keys().filter(|k| !known(k)).cloned().collect();

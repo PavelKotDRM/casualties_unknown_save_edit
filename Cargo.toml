@@ -1,6 +1,6 @@
 [package]
 name = "cu_save_editor"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 description = "Save editor and wiki for the game Casualties Unknown"
 repository = "https://github.com/PavelKotDRM/casualties_unknown_save_edit"
@@ -18,6 +18,10 @@ unity-rs-core = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
+syn = { version = "3", features = ["full", "visit"] }
+
+[build-dependencies]
+syn = { version = "3", features = ["full", "visit"] }
 
 [target."cfg(windows)".dependencies]
 winreg = "0.56.0"

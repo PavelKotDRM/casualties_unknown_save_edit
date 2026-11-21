@@ -1,5 +1,6 @@
 pub(super) fn translate(source: &str) -> Option<&'static str> {
     match source {
+        "JSON key: {key}" => Some("Ключ JSON: {key}"),
         "Circulation & breathing" => Some("Кровообращение и дыхание"),
         "Needs" => Some("Потребности"),
         "Mind" => Some("Психика"),

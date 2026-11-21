@@ -239,7 +239,7 @@ fn limb_table(ui: &mut Ui, data: &Value, names: Names, state: &mut LimbsState) {
                             let v = obj.and_then(|o| get_f64(o, key));
                             match (schema::limb_field(key), v) {
                                 (Some(spec), Some(v)) => {
-                                    super::mini_gauge(ui, spec, v, 60.0);
+                                    super::mini_gauge(ui, spec, v, 60.0, names);
                                 }
                                 _ => {
                                     ui.weak("—");

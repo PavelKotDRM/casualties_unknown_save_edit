@@ -21,6 +21,30 @@ impl Names<'_> {
         self.interface_language.text(source)
     }
 
+    /// Readable, localized label for a body or limb field.
+    pub fn field(&self, field: &schema::FieldSpec) -> String {
+        if field.label != field.key {
+            self.text(field.label).into_owned()
+        } else {
+            self.stat(field.key)
+        }
+    }
+
+    /// Game label when available, otherwise a translated readable identifier.
+    pub fn stat(&self, key: &str) -> String {
+        let stem = key
+            .strip_suffix("Amount")
+            .or_else(|| key.strip_suffix("Level"))
+            .unwrap_or(key);
+        if let Some(text) = self
+            .locale
+            .and_then(|locale| locale.other(key).or_else(|| locale.moodle_name(stem)))
+        {
+            return strip_rich_text(text);
+        }
+        self.text(&humanize(stem)).into_owned()
+    }
+
     /// Item display name (falls back to the id).
     pub fn item(&self, id: &str) -> String {
         self.locale
@@ -236,5 +260,54 @@ impl Names<'_> {
                     .map(|s| (*s).to_owned())
             })
             .unwrap_or_else(|| self.text("Unknown layer").into_owned())
+    }
+}
+
+fn humanize(key: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in key.chars().enumerate() {
+        if i == 0 {
+            out.extend(c.to_uppercase());
+        } else if c.is_uppercase() {
+            out.push(' ');
+            out.extend(c.to_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stat_labels_preserve_explicit_labels_and_prefer_clean_game_names() {
+        let locale = Locale::from_json(
+            r##"{
+            "other": {"bloodOxygen": "<b>Game oxygen</b>"},
+            "moodles": {"pain": "<color=#ff0000>Game pain</color>"}
+        }"##,
+        )
+        .unwrap();
+        let names = Names {
+            locale: Some(&locale),
+            interface_language: InterfaceLanguage::Russian,
+        };
+        assert_eq!(names.stat("bloodOxygen"), "Game oxygen");
+        assert_eq!(names.stat("painAmount"), "Game pain");
+        assert_eq!(names.stat("septicShock"), "Септический шок");
+        let field = schema::FieldSpec {
+            key: "bloodOxygen",
+            label: "Stamina",
+            help: "",
+            kind: schema::Kind::Number,
+            min: 0.0,
+            max: 100.0,
+            unit: "",
+            good: schema::Good::Neutral,
+        };
+        assert_eq!(names.field(&field), "Выносливость");
     }
 }

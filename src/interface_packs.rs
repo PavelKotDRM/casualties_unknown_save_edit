@@ -2,10 +2,35 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::Value;
+
+const SOURCE_STRINGS: &[&str] = include!(env!("CU_INTERFACE_STRINGS"));
+
+/// Writes an editable language pack without requiring installed game data.
+/// Existing files are never overwritten.
+pub fn export_template(path: &Path) -> Result<usize, String> {
+    let translations: BTreeMap<_, _> = SOURCE_STRINGS.iter().map(|&text| (text, text)).collect();
+    let template = serde_json::json!({
+        "code": "custom",
+        "name": "Custom language",
+        "translations": translations,
+    });
+    let mut text = serde_json::to_string_pretty(&template)
+        .map_err(|error| format!("Cannot serialize interface language template: {error}"))?;
+    text.push('\n');
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("Cannot create {}: {error}", path.display()))?;
+    file.write_all(text.as_bytes())
+        .map_err(|error| format!("Cannot write {}: {error}", path.display()))?;
+    Ok(translations.len())
+}
 
 /// A language pack. Keys are the English interface strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +131,43 @@ pub fn load(directory: &Path) -> (Vec<Arc<InterfacePack>>, Vec<String>) {
 mod tests {
     use super::*;
     use crate::ui::InterfaceLanguage;
+
+    #[test]
+    fn template_is_a_loadable_pack_with_labels_and_unchanged_placeholders() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("template.json");
+        let count = export_template(&path).unwrap();
+        let (packs, errors) = load(directory.path());
+        assert!(errors.is_empty());
+        let pack = &packs[0];
+        assert_eq!(pack.translations.len(), count);
+        for source in [
+            "File",
+            "Blood oxygen",
+            "Brain grow sickness",
+            "Weapons & ammo",
+            "Includes the game's default liquids, batteries and component state. Edit contents after adding.",
+            "Level {level}: {min} XP, level {next}: {max} XP",
+        ] {
+            assert_eq!(
+                pack.translations.get(source).map(String::as_str),
+                Some(source)
+            );
+        }
+        assert!(!pack.translations.contains_key("bloodOxygen"));
+        assert!(!pack.translations.contains_key("Assembly-CSharp.dll"));
+        assert!(!pack.translations.contains_key("Archivo"));
+    }
+
+    #[test]
+    fn template_export_preserves_existing_files_and_reports_missing_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("existing.json");
+        fs::write(&path, "existing translations").unwrap();
+        assert!(export_template(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "existing translations");
+        assert!(export_template(&directory.path().join("missing").join("template.json")).is_err());
+    }
 
     #[test]
     fn loads_packs_and_falls_back_for_missing_or_empty_translations() {

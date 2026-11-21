@@ -264,10 +264,14 @@ pub fn check_destination(
         weights.game_complete.then_some(weights.game).flatten()
     } else {
         stats.get(item_id).and_then(|item_stats| {
-            item_stats
-                .liquid_capacity
-                .is_none()
-                .then(|| item_stats.total_weight(1.0))
+            if item_stats.liquid_capacity.is_none() {
+                return Some(item_stats.total_weight(1.0));
+            }
+            let item = model::new_item(item_id, location).ok()?;
+            let components = model::new_item_components(item_id).ok()?;
+            let candidate = serde_json::json!({"items": [item], "itemComponents": [components]});
+            let weights = model::item_weights(&candidate, 0, stats);
+            weights.game_complete.then_some(weights.game).flatten()
         })
     }
     .filter(|weight| weight.is_finite() && *weight >= 0.0)

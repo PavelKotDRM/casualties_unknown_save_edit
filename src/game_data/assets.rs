@@ -113,36 +113,7 @@ pub(super) fn ammunition(
         empty: constant("RoundInChamber", "None")?,
     };
     let studio = Studio::open(data_dir).map_err(|error| error.to_string())?;
-    let mut ids = HashMap::new();
-    for object in studio
-        .objects()
-        .filter(|o| o.class_id() == 114 && o.name() == Some("Item"))
-    {
-        let bytes = object.read_raw(1024 * 1024).map_err(|e| e.to_string())?;
-        let mut cursor = Cursor {
-            bytes: &bytes,
-            offset: 0,
-        };
-        let reference = cursor
-            .reference()
-            .ok_or("Truncated ammunition item reference")?;
-        cursor.offset =
-            mono_behaviour_data_offset(&bytes).ok_or("Invalid ammunition item header")?;
-        let id = cursor.string().ok_or("Invalid ammunition item ID")?;
-        let resource = studio
-            .object(object.file_index(), reference.1)
-            .is_some_and(|object| {
-                object.container().is_some_and(|resource| {
-                    let name = resource.rsplit(['/', '\\']).next().unwrap_or(resource);
-                    name.strip_suffix(".prefab")
-                        .unwrap_or(name)
-                        .eq_ignore_ascii_case(&id)
-                })
-            });
-        if reference.0 == 0 && resource {
-            ids.insert((object.file_index(), reference.1), id);
-        }
-    }
+    let ids = resource_item_ids(&studio)?;
     let reader = super::metadata::Reader::new(assembly);
     let magazine_resources: HashSet<_> = reader
         .method("AmmoScript", "AmmoTypeToMagazine")
@@ -154,42 +125,8 @@ pub(super) fn ammunition(
     let mut items = BTreeMap::new();
     let mut guns = BTreeMap::new();
     for owner in ["AmmoScript", "GunScript"] {
-        let fields = assembly
-            .types()
-            .iter()
-            .find_map(|entry| {
-                let ty = entry.value();
-                (ty.name == owner).then(|| {
-                    ty.fields()
-                        .filter(|field| {
-                            !field.flags.is_static()
-                                && !field.flags.is_not_serialized()
-                                && field.flags.access() == FieldAttributes::PUBLIC
-                        })
-                        .map(|field| (field.name.clone(), field.signature.base.clone()))
-                        .collect::<Vec<_>>()
-                })
-            })
-            .ok_or_else(|| format!("Missing game type {owner}"))?;
-        let saved: HashSet<_> = assembly
-            .types()
-            .iter()
-            .filter(|entry| entry.value().name == owner)
-            .flat_map(|entry| {
-                entry
-                    .value()
-                    .fields()
-                    .filter(|field| {
-                        field.custom_attributes.iter().any(|(_, attribute)| {
-                            matches!(&attribute.constructor,
-                    dotscope::metadata::typesystem::CilTypeReference::MemberRef(member)
-                    if member.declaredby.name().as_deref() == Some("JsonPropertyAttribute"))
-                        })
-                    })
-                    .map(|field| field.name.clone())
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+        let fields = prefab_fields(assembly, owner)?;
+        let saved = saved_fields(assembly, owner);
         let constructor = super::metadata::constructor_defaults(&reader, owner);
         for object in studio
             .objects()
@@ -269,6 +206,258 @@ pub(super) fn ammunition(
         guns,
         chamber,
     })
+}
+
+fn prefab_fields(
+    assembly: &CilObject,
+    owner: &str,
+) -> Result<Vec<(String, TypeSignature)>, String> {
+    assembly
+        .types()
+        .iter()
+        .find_map(|entry| {
+            let ty = entry.value();
+            (ty.name == owner).then(|| {
+                ty.fields()
+                    .filter(|field| {
+                        !field.flags.is_static()
+                            && !field.flags.is_not_serialized()
+                            && field.flags.access() == FieldAttributes::PUBLIC
+                    })
+                    .map(|field| (field.name.clone(), field.signature.base.clone()))
+                    .collect()
+            })
+        })
+        .ok_or_else(|| format!("Missing game type {owner}"))
+}
+
+fn saved_fields(assembly: &CilObject, owner: &str) -> HashSet<String> {
+    assembly
+        .types()
+        .iter()
+        .filter(|entry| entry.value().name == owner)
+        .flat_map(|entry| {
+            entry
+                .value()
+                .fields()
+                .filter(|field| {
+                    field.custom_attributes.iter().any(|(_, attribute)| {
+                        matches!(&attribute.constructor,
+                    dotscope::metadata::typesystem::CilTypeReference::MemberRef(member)
+                    if member.declaredby.name().as_deref() == Some("JsonPropertyAttribute"))
+                    })
+                })
+                .map(|field| field.name.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn resource_item_ids(studio: &Studio) -> Result<HashMap<(usize, i64), String>, String> {
+    let mut ids = HashMap::new();
+    for object in studio
+        .objects()
+        .filter(|o| o.class_id() == 114 && o.name() == Some("Item"))
+    {
+        let bytes = object.read_raw(1024 * 1024).map_err(|e| e.to_string())?;
+        let mut cursor = Cursor {
+            bytes: &bytes,
+            offset: 0,
+        };
+        let reference = cursor
+            .reference()
+            .ok_or("Truncated resource item reference")?;
+        cursor.offset = mono_behaviour_data_offset(&bytes).ok_or("Invalid resource item header")?;
+        let id = cursor.string().ok_or("Invalid resource item ID")?;
+        let resource = studio
+            .object(object.file_index(), reference.1)
+            .is_some_and(|object| {
+                object.container().is_some_and(|resource| {
+                    let name = resource.rsplit(['/', '\\']).next().unwrap_or(resource);
+                    name.strip_suffix(".prefab")
+                        .unwrap_or(name)
+                        .eq_ignore_ascii_case(&id)
+                })
+            });
+        if reference.0 == 0 && resource {
+            ids.insert((object.file_index(), reference.1), id);
+        }
+    }
+    Ok(ids)
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) struct BatteryDefaults {
+    pub state: serde_json::Value,
+    pub max_allowed_charge: f32,
+}
+
+pub(super) fn batteries(
+    data_dir: &Path,
+    assembly: &CilObject,
+) -> Result<std::collections::BTreeMap<String, BatteryDefaults>, String> {
+    let studio = Studio::open(data_dir).map_err(|error| error.to_string())?;
+    let ids = resource_item_ids(&studio)?;
+    let reader = super::metadata::Reader::new(assembly);
+    let owner = "BatteryItem";
+    let fields = prefab_fields(assembly, owner)?;
+    let saved = saved_fields(assembly, owner);
+    let constructor = super::metadata::constructor_defaults(&reader, owner);
+    let awake = reader
+        .method(owner, "Awake")
+        .ok_or("Missing BatteryItem.Awake")?;
+    let mut batteries = std::collections::BTreeMap::new();
+    for object in studio
+        .objects()
+        .filter(|o| o.class_id() == 114 && o.name() == Some(owner))
+    {
+        let bytes = object.read_raw(1024 * 1024).map_err(|e| e.to_string())?;
+        let mut cursor = Cursor {
+            bytes: &bytes,
+            offset: 0,
+        };
+        let (file, path) = cursor
+            .reference()
+            .ok_or("Truncated battery component reference")?;
+        let Some(id) = (file == 0)
+            .then(|| ids.get(&(object.file_index(), path)))
+            .flatten()
+        else {
+            continue;
+        };
+        cursor.offset =
+            mono_behaviour_data_offset(&bytes).ok_or("Invalid battery component header")?;
+        let mut values: serde_json::Map<_, _> = constructor.clone().into_iter().collect();
+        for (name, ty) in &fields {
+            let value = cursor
+                .value(assembly, ty)
+                .ok_or_else(|| format!("Cannot decode battery field {name} for {id}"))?;
+            values.insert(name.clone(), value);
+        }
+        initialize_battery(&reader, &awake, &mut values)
+            .ok_or_else(|| format!("Cannot evaluate BatteryItem.Awake for {id}"))?;
+        let max_allowed_charge = values
+            .get("maxAllowedCharge")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|charge| charge.is_finite() && *charge > 0.0)
+            .ok_or_else(|| format!("Invalid battery capacity for {id}"))?
+            as f32;
+        let defaults: serde_json::Map<_, _> = values
+            .into_iter()
+            .filter(|(key, _)| saved.contains(key))
+            .collect();
+        let defaults = BatteryDefaults {
+            state: serde_json::Value::Object(defaults),
+            max_allowed_charge,
+        };
+        if batteries
+            .get(id)
+            .is_some_and(|previous| previous != &defaults)
+        {
+            return Err(format!("Conflicting battery prefabs for {id}"));
+        }
+        batteries.insert(id.clone(), defaults);
+    }
+    Ok(batteries)
+}
+
+fn initialize_battery(
+    reader: &super::metadata::Reader<'_>,
+    method: &dotscope::metadata::method::MethodRc,
+    values: &mut serde_json::Map<String, serde_json::Value>,
+) -> Option<()> {
+    use serde_json::{Value, json};
+    let code: Vec<_> = method.instructions().collect();
+    // The initial GetComponent assignment is a runtime reference, not saved state.
+    let mut pc = code.windows(2).position(|pair| {
+        pair[0].mnemonic == "ldarg.0"
+            && pair[1].mnemonic == "ldfld"
+            && reader.field(&pair[1].operand) == Some(("BatteryItem".into(), "preset".into()))
+    })?;
+    let mut stack = Vec::<Value>::new();
+    let mut locals = HashMap::new();
+    let local = |instruction: &dotscope::assembly::Instruction| {
+        instruction
+            .mnemonic
+            .rsplit('.')
+            .next()?
+            .parse::<usize>()
+            .ok()
+    };
+    for _ in 0..1024 {
+        let instruction = code.get(pc)?;
+        pc += 1;
+        match instruction.mnemonic {
+            "ldarg.0" => stack.push(Value::Null),
+            "ldfld" => {
+                if !stack.pop()?.is_null() {
+                    return None;
+                }
+                let (owner, name) = reader.field(&instruction.operand)?;
+                if owner != "BatteryItem" {
+                    return None;
+                }
+                stack.push(values.get(&name)?.clone());
+            }
+            "stfld" => {
+                let value = stack.pop()?;
+                if !stack.pop()?.is_null() {
+                    return None;
+                }
+                let (owner, name) = reader.field(&instruction.operand)?;
+                if owner != "BatteryItem" {
+                    return None;
+                }
+                values.insert(name, value);
+            }
+            op if op.starts_with("ldc.") || op == "ldstr" => {
+                stack.push(
+                    match super::instruction_value(instruction, reader.assembly.userstrings())? {
+                        super::StaticValue::Number(value) => json!(value),
+                        super::StaticValue::String(value) => value.into(),
+                    },
+                );
+            }
+            op if op.starts_with("stloc.") => {
+                locals.insert(local(instruction)?, stack.pop()?);
+            }
+            op if op.starts_with("ldloc.") => {
+                stack.push(locals.get(&local(instruction)?)?.clone());
+            }
+            "switch" => {
+                let index = stack.pop()?.as_f64()?;
+                if index < 0.0 || index.fract() != 0.0 {
+                    return None;
+                }
+                let target = instruction.branch_targets.get(index as usize)?;
+                pc = code
+                    .iter()
+                    .position(|instruction| instruction.rva == *target)?;
+            }
+            "brfalse" | "brfalse.s" | "brtrue" | "brtrue.s" => {
+                let value = stack.pop()?;
+                let truth = value
+                    .as_bool()
+                    .or_else(|| value.as_f64().map(|value| value != 0.0))?;
+                if truth == instruction.mnemonic.starts_with("brtrue") {
+                    let target = instruction.branch_targets.first()?;
+                    pc = code
+                        .iter()
+                        .position(|instruction| instruction.rva == *target)?;
+                }
+            }
+            "br" | "br.s" => {
+                let target = instruction.branch_targets.first()?;
+                pc = code
+                    .iter()
+                    .position(|instruction| instruction.rva == *target)?;
+            }
+            "nop" => {}
+            "ret" => return stack.is_empty().then_some(()),
+            _ => return None,
+        }
+    }
+    None
 }
 
 impl<'a> Cursor<'a> {
@@ -747,10 +936,23 @@ pub(super) fn player(
             .collect();
         let slot_defs: Vec<_> = slots
             .iter()
-            .map(|name| HoldSlotDef {
-                name: intern(locale.and_then(|locale| locale.other(name)).unwrap_or(name)),
-                locale_key: intern(name),
-                icon: "",
+            .enumerate()
+            .map(|(index, _)| {
+                // Body.slots uses this order; its GameObjects are all named InvSlot.
+                let (name, key) = match index {
+                    0 => ("Right hand", "HandF"),
+                    1 => ("Left hand", "HandB"),
+                    2 => ("Mouth", "mouth"),
+                    3 => ("Upper back", "upperback"),
+                    4 => ("Middle back", "middleback"),
+                    5 => ("Lower back", "lowerback"),
+                    _ => (intern(format!("Unknown slot {index}")), ""),
+                };
+                HoldSlotDef {
+                    name,
+                    locale_key: key,
+                    icon: "",
+                }
             })
             .collect();
         if !metadata.limbs.is_empty()
@@ -783,6 +985,36 @@ pub(super) fn player(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registered_item_catalogue_is_backed_by_resource_prefabs() {
+        let Some(game_dir) = std::env::var_os("CU_GAME_DIR") else {
+            eprintln!("skipped: CU_GAME_DIR is not set");
+            return;
+        };
+        let data_dir = Path::new(&game_dir).join("CasualtiesUnknown_Data");
+        let assembly = CilObject::from_path_with_validation(
+            data_dir.join("Managed").join("Assembly-CSharp.dll"),
+            dotscope::ValidationConfig::minimal(),
+        )
+        .unwrap();
+        let studio = Studio::open(&data_dir).unwrap();
+        let resource_ids: std::collections::BTreeSet<_> =
+            resource_item_ids(&studio).unwrap().into_values().collect();
+        let catalogue_ids: std::collections::BTreeSet<_> = super::super::il::items(&assembly)
+            .unwrap()
+            .into_keys()
+            .collect();
+        assert!(catalogue_ids.is_subset(&resource_ids));
+        // This leftover prefab has no GlobalItems entry; Item.GetItem cannot load it.
+        assert_eq!(
+            resource_ids
+                .difference(&catalogue_ids)
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["reinforcedrope"]
+        );
+    }
 
     #[test]
     fn string_array_reads_alignment_and_rejects_truncation() {

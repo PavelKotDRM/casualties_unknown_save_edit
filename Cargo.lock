@@ -940,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "cu_save_editor"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -950,6 +950,7 @@ dependencies = [
  "flate2",
  "rfd",
  "serde_json",
+ "syn 3.0.10",
  "tempfile",
  "unity-rs-core",
  "winreg",

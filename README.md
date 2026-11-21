@@ -13,6 +13,8 @@ opens it, makes a backup, and shows the data as game-like views: gauges, a
 clickable body figure, skill bars, inventory cards and more. A raw JSON tree is
 also available. Fields the editor does not recognise are kept unchanged, and an
 unmodified file is written back byte-for-byte identical.
+Opening or reloading a save does not count as an edit; the save prompt appears
+only when the document has unsaved changes.
 
 ## Contents
 
@@ -132,11 +134,18 @@ unmodified file is written back byte-for-byte identical.
 
 - **Real names** of items, liquids and settings in any game language, read from
   the game's `Lang/*.json` files.
+- **Readable health indicators.** Vital signs, health and limb fields use
+  localized names rather than internal IDs, with readable interface-language
+  fallbacks when the game has no label. Original JSON keys remain in tooltips
+  and the raw editor.
 - **Game-synced item stats.** Item definitions are read from
   `Assembly-CSharp.dll`, and container limits and encumbrance multipliers from
   the Unity assets. The editor reads metadata and IL only and never runs game
   code. Set the folder with *Game data → Set game folder…* or let the editor
   find it.
+  All subclasses of the game's item definition type are included, including
+  loose small, medium and large batteries; installed batteries are separate
+  device component state.
 - **An installation is required for game-dependent views.** Without readable
   game data, the editor shows an installation prompt instead of a built-in
   game catalogue. Opening, backing up, importing, exporting and editing raw
@@ -186,6 +195,29 @@ Editor settings (game folder, languages, automatic refresh, spoiler reveals) are
 Windows, `~/.config` on Linux and `~/Library/Application Support` on macOS.
 
 ## Inventory and weight
+
+Adding an item uses readable hand/body-slot labels and includes game-defined
+liquid contents (including medicines and drinks), installed batteries, and
+ammunition component defaults from resource prefabs. Empty-by-default containers
+stay empty; weapons are not automatically loaded beyond their game defaults.
+Contents remain editable in the item details. Liquid fill levels are included
+when checking whether a new item fits inside a container.
+
+Liquid edits update condition using the game's total-volume/capacity formula;
+the condition control is read-only for these items. Fixed-cost consumables have
+remaining-use controls linked to condition in both directions, using the game's
+condition thresholds and single-precision subtraction. Minigames and actions
+that transfer or destroy the item are not treated as repeatable uses; other
+gameplay requirements still apply.
+
+Installed-battery choices include every compatible battery from the game data.
+Maximum charge follows the selected battery, and charge and condition are linked
+by `charge = condition × maximum charge`. Changing battery type preserves its
+condition percentage; removing it clears charge and its favourite flag. These
+are save edits, not transfers of loose batteries from inventory.
+Existing inconsistencies can be repaired with **Synchronize with contents**;
+merely opening item details does not rewrite them. Ammunition counts remain
+independent of condition, as in the game. The Raw JSON tab remains unrestricted.
 
 The editor follows the game's own rules:
 
@@ -305,8 +337,23 @@ format:
   Keep placeholders such as `{level}` unchanged. Missing or empty translations
   fall back to English.
 
-The built-in [translation table](src/ui/interface_language.rs) lists most source
-strings; game item and setting names come from the game itself.
+Export a complete template of the editor's interface translation keys:
+
+```powershell
+.\cu_save_editor.exe --export-interface-language .\interface-language.json
+```
+
+From source, use `cargo run -- --export-interface-language .\interface-language.json`.
+The command does not open the GUI or require a game installation. It refuses to
+overwrite an existing file. Change `code` and `name`, then translate the English
+values under `translations`, leaving keys and placeholders unchanged.
+
+The template is generated from the application source at build time, including
+menus, tooltips, editor parameter labels and built-in fallback stat labels.
+Game-provided item names, descriptions and settings are still translated by the
+game's language files; they are not exported.
+The exported [`examples/interface-language-template.json`](examples/interface-language-template.json)
+contains the current English keys and values, including readable health labels.
 
 Restart the editor or use *Game data → Reload interface languages*, then select
 the language in the same menu. Invalid files and duplicate codes are reported in

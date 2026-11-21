@@ -55,6 +55,15 @@ pub enum ContentsUse {
     ApplyToLimb,
 }
 
+/// A fixed condition subtraction and its native condition guard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConditionUse {
+    pub on_limb: bool,
+    pub cost: f32,
+    pub minimum: f32,
+    pub inclusive: bool,
+}
+
 /// What using an item does.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ItemUse {
@@ -63,6 +72,8 @@ pub struct ItemUse {
     pub effects: Vec<Effect>,
     /// Item condition used up by one use (1 = the whole item).
     pub condition_per_use: Option<f32>,
+    /// Present only for directly verified fixed-cost actions, not minigames.
+    pub condition_use: Option<ConditionUse>,
     /// Liquid contents used per use, in millilitres.
     pub contents: Option<(ContentsUse, f32)>,
 }
@@ -72,6 +83,7 @@ pub struct ItemUse {
 pub struct ItemProfile {
     /// Trade value.
     pub value: Option<f32>,
+    pub max_charge: Option<f32>,
     /// Minutes until the item spoils.
     pub decay_minutes: Option<f32>,
     /// INT skill needed to recognise the item.

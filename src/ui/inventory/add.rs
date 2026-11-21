@@ -2,7 +2,9 @@
 use std::collections::HashMap;
 
 use egui::{RichText, Ui};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 
 use super::{
     InventoryState, Names, colors, default_location, group_icon, holder_location_allowed,
@@ -160,6 +162,35 @@ pub(super) fn add_window(
             }
             if let Some(error) = &state.add_error {
                 ui.colored_label(colors::BAD, error);
+            }
+            ui.weak(names.text("Includes the game's default liquids, batteries and component state. Edit contents after adding.").into_owned());
+            if !state.add_id.trim().is_empty() {
+                match model::new_item_components(state.add_id.trim()) {
+                    Ok(components) => {
+                        if let Some(stack) = components
+                            .get(crate::game_data::component_key("WaterContainerItem"))
+                            .and_then(|component| component.get("stack"))
+                            .and_then(Value::as_array)
+                        {
+                            if stack.is_empty() {
+                                ui.label(format!("{}: {}", names.text("Contents"), names.text("Empty")));
+                            }
+                            for entry in stack {
+                                if let (Some(liquid), Some(amount)) = (
+                                    entry.get("liquidId").and_then(Value::as_str),
+                                    entry.get("amount").and_then(Value::as_f64),
+                                ) {
+                                    ui.label(format!("{}: {} · {amount} ml", names.text("Contents"), names.liquid(liquid)));
+                                }
+                            }
+                        }
+                        if let Some(battery) = components.get(crate::game_data::component_key("BatteryItem")) {
+                            let id = battery.get("batteryType").and_then(Value::as_str).filter(|id| !id.is_empty());
+                            ui.label(format!("{}: {}", names.text("Battery"), id.map_or_else(|| names.text("(none)").into_owned(), |id| names.item(id))));
+                        }
+                    }
+                    Err(error) => { ui.colored_label(colors::BAD, error); }
+                }
             }
             let can_add = state.add_location.as_ref().is_some_and(|location| {
                 destination_status(data, location, state.add_id.trim(), stats, names, None).2
@@ -393,11 +424,18 @@ fn do_add_with(
             return false;
         }
     };
+    let components = match model::new_item_components(state.add_id.trim()) {
+        Ok(components) => components,
+        Err(error) => {
+            state.add_error = Some(error);
+            return false;
+        }
+    };
     if data.get("items").and_then(Value::as_array).is_none() {
         state.add_error = Some("This save has no items array.".to_owned());
         return false;
     }
-    match model::add_item(data, item, json!({})) {
+    match model::add_item(data, item, components) {
         Some(i) => {
             state.selected = Some(i);
             state.add_error = None;
@@ -480,6 +518,83 @@ mod tests {
         assert_eq!(data, original);
         assert!(do_add_fixture(&mut data, &mut state, &stats, names()));
         assert!(state.add_error.is_none());
+    }
+
+    #[test]
+    fn adding_liquids_uses_default_fill_for_limits_and_saves_aligned_contents() {
+        use crate::game_data::{metadata::Metadata, runtime::scoped_for_test};
+        let water = crate::game_data::component_key("WaterContainerItem");
+        let components = json!({&water: {"stack": [{"liquidId": "medicine", "amount": 100.0}]}});
+        let _metadata = scoped_for_test(Metadata {
+            item_defaults: serde_json::from_value(json!({
+                "condition": 1.0, "favourited": false, "label": "", "swatch": 0
+            }))
+            .unwrap(),
+            item_components: [("medicine".into(), components.clone())].into(),
+            items: vec![catalog::ItemDef {
+                id: "medicine",
+                category: "medical",
+                group: "medical",
+                wear_slot: "",
+                capacity: 100.0,
+            }],
+            minimum_item_weight: Some(0.1),
+            ..Default::default()
+        });
+        let mut container = test_item_stats(&[]);
+        container.container_capacity = Some(0.5);
+        container.container_max_item_weight = Some(2.0);
+        container.container_encumbrance = Some(1.0);
+        container.container_tag_restriction = Some(HashSet::new());
+        let mut medicine = test_item_stats(&[]);
+        medicine.liquid_capacity = Some(100.0);
+        medicine.scale_weight_with_condition = true;
+        let mut stats = HashMap::from([("case".into(), container), ("medicine".into(), medicine)]);
+        let mut state = InventoryState {
+            add_id: "medicine".into(),
+            add_location: Some(Location::Slot(0)),
+            ..Default::default()
+        };
+        let mut data = json!({"items": [{"id": "case", "slot": 0}], "itemComponents": [{}]});
+        let original = data.clone();
+        assert!(!do_add(&mut data, &mut state, &stats, names()));
+        assert_eq!(data, original);
+
+        stats.get_mut("case").unwrap().container_capacity = Some(1.0);
+        assert!(do_add(&mut data, &mut state, &stats, names()));
+        assert_eq!(state.selected, Some(1));
+        assert_eq!(data["items"][1]["condition"], 1.0);
+        assert_eq!(data["itemComponents"][1], components);
+        assert_eq!(data["itemComponents"][0], json!({}));
+        assert!(!do_add(&mut data, &mut state, &stats, names()));
+    }
+
+    #[test]
+    fn unavailable_component_defaults_report_an_error_without_adding() {
+        let _metadata =
+            crate::game_data::runtime::scoped_for_test(crate::game_data::metadata::Metadata {
+                item_components_error: Some("Unsupported battery initialization".into()),
+                ..Default::default()
+            });
+        let mut data = json!({"items": [], "itemComponents": []});
+        let original = data.clone();
+        let mut state = InventoryState {
+            add_id: "flashlight".into(),
+            ..Default::default()
+        };
+        assert!(!do_add_fixture(
+            &mut data,
+            &mut state,
+            &HashMap::new(),
+            names()
+        ));
+        assert_eq!(data, original);
+        assert!(
+            state
+                .add_error
+                .unwrap()
+                .contains("Unsupported battery initialization")
+        );
     }
 
     #[test]

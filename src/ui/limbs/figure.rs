@@ -132,7 +132,7 @@ pub fn body_figure(
                 ] {
                     if let (Some(spec), Some(v)) = (schema::limb_field(key), get_f64(obj, key)) {
                         ui.horizontal(|ui| {
-                            ui.label(format!("{}:", names.text(spec.label)));
+                            ui.label(format!("{}:", names.field(spec)));
                             ui.colored_label(value_color(spec, v as f32), fmt_num(v));
                         });
                     }

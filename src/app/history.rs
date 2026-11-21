@@ -82,6 +82,7 @@ impl EditorApp {
             .save
             .as_ref()
             .map_or(Value::Null, |save| save.data.clone());
+        self.clean = data.clone();
         self.history.reset(data);
         self.raw.text.clear();
         self.raw.text_dirty = false;
@@ -124,7 +125,118 @@ impl EditorApp {
 
 #[cfg(test)]
 mod tests {
+    use super::super::*;
     use super::UndoStack;
+    use serde_json::json;
+
+    fn app() -> EditorApp {
+        EditorApp {
+            save: None,
+            clean: Value::Null,
+            history: UndoStack::new(Value::Null),
+            tab: Tab::Overview,
+            status: None,
+            last_backup: None,
+            config: Config {
+                auto_refresh: false,
+                ..Default::default()
+            },
+            languages: Vec::new(),
+            interface_packs: Vec::new(),
+            locale: None,
+            item_stats: HashMap::new(),
+            item_effects: Default::default(),
+            game_info: None,
+            limbs: Default::default(),
+            inventory: Default::default(),
+            raw: Default::default(),
+            backups: Default::default(),
+            about_open: false,
+            pending: None,
+            new_save_wizard: None,
+            progress: GameProgress::unknown("Test game data unavailable".into()),
+            achievements: None,
+            achievements_stamp: None,
+            achievements_ui: Default::default(),
+            last_refresh: Instant::now(),
+            game_stamp: Vec::new(),
+            disk_seen: None,
+            wiki: Default::default(),
+            allow_close: false,
+            title: String::new(),
+            ctx: egui::Context::default(),
+            cjk_font: false,
+            error_log: Default::default(),
+            item_sync_error: None,
+            crash: None,
+            report: Default::default(),
+        }
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn opening_and_reloading_are_clean_but_real_edits_need_confirmation() {
+        for format in [SaveFormat::Gzip, SaveFormat::PlainJson] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("first.sv");
+            let document = json!({"body": {}, "limbs": [], "items": [], "runTime": 12.5});
+            let bytes = save::encode(&document, format);
+            std::fs::write(&path, &bytes).unwrap();
+            let mut app = app();
+            app.open(&path);
+            assert!(
+                !app.is_dirty(),
+                "opening a save must establish its clean baseline"
+            );
+            assert!(!app.history.can_undo());
+            assert!(!app.history.can_redo());
+
+            let context = app.ctx.clone();
+            let mut output = context.run_ui(Default::default(), |ui| app.central(ui));
+            output.textures_delta.clear();
+            app.commit();
+            assert!(!app.is_dirty());
+            assert!(!app.history.can_undo());
+            assert_eq!(app.save.as_ref().unwrap().data, document);
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+            app.save.as_mut().unwrap().data["runTime"] = json!(20.0);
+            app.commit();
+            assert!(app.is_dirty());
+            app.request(Pending::Close);
+            assert!(matches!(app.pending, Some(Pending::Close)));
+            assert!(!app.allow_close);
+            app.pending = None;
+            app.undo();
+            assert!(
+                !app.is_dirty(),
+                "undoing to the loaded document must be clean"
+            );
+            app.redo();
+            assert!(app.is_dirty());
+
+            app.perform(Pending::Reload);
+            assert!(!app.is_dirty());
+            assert!(!app.history.can_undo());
+            assert!(!app.history.can_redo());
+            assert_eq!(app.save.as_ref().unwrap().data, document);
+
+            let other = directory.path().join("second.sv");
+            let other_document = json!({"body": {}, "limbs": [], "items": [], "runTime": 99.0});
+            std::fs::write(&other, save::encode(&other_document, format)).unwrap();
+            app.request(Pending::Open(other.clone()));
+            assert!(
+                app.pending.is_none(),
+                "switching an unedited save needs no prompt"
+            );
+            assert_eq!(app.save.as_ref().unwrap().path, other);
+            assert_eq!(app.save.as_ref().unwrap().data, other_document);
+            assert!(!app.is_dirty());
+            app.request(Pending::Close);
+            assert!(app.pending.is_none());
+            assert!(app.allow_close);
+        }
+    }
 
     #[test]
     fn edits_are_grouped_and_new_commits_discard_redo() {

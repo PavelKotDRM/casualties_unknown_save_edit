@@ -96,7 +96,7 @@ pub fn gauge_bar(ui: &mut Ui, spec: &FieldSpec, value: &mut f64, width: f32) -> 
 }
 
 /// Read-only small gauge (used in summaries).
-pub fn mini_gauge(ui: &mut Ui, spec: &FieldSpec, value: f64, width: f32) -> Response {
+pub fn mini_gauge(ui: &mut Ui, spec: &FieldSpec, value: f64, width: f32, names: Names) -> Response {
     let height = 8.0;
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     let painter = ui.painter_at(rect);
@@ -104,21 +104,27 @@ pub fn mini_gauge(ui: &mut Ui, spec: &FieldSpec, value: f64, width: f32) -> Resp
     let t = ((value as f32 - spec.min) / (spec.max - spec.min).max(f32::EPSILON)).clamp(0.0, 1.0);
     let fill = egui::Rect::from_min_size(rect.min, Vec2::new(rect.width() * t, height));
     painter.rect_filled(fill, 3.0, value_color(spec, value as f32));
-    response.on_hover_text(format!("{}: {}{}", spec.label, fmt_num(value), spec.unit))
+    response.on_hover_text(format!(
+        "{}: {}{}\n{}",
+        names.field(spec),
+        fmt_num(value),
+        spec.unit,
+        names.text("JSON key: {key}").replace("{key}", spec.key),
+    ))
 }
 
 /// Label cell of a field row, with tooltip and the JSON key on hover.
 fn field_label(ui: &mut Ui, spec: &FieldSpec, names: Names) {
     ui.add_sized(
         [LABEL_WIDTH, ui.spacing().interact_size.y],
-        egui::Label::new(names.text(spec.label).to_string()).truncate(),
+        egui::Label::new(names.field(spec)).truncate(),
     )
     .on_hover_ui(|ui| {
-        ui.strong(names.text(spec.label).to_string());
+        ui.strong(names.field(spec));
         if !spec.help.is_empty() {
             ui.label(names.text(spec.help).to_string());
         }
-        ui.weak(format!("JSON key: {}", spec.key));
+        ui.weak(names.text("JSON key: {key}").replace("{key}", spec.key));
     });
 }
 

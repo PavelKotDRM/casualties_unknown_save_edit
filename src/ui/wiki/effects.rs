@@ -12,6 +12,9 @@ pub(super) fn item_effects(entry: &mut Entry, sources: &Sources, id: &str) {
     if let Some(value) = profile.value.filter(|v| *v > 0.0) {
         fact("Value", fmt_num(f64::from(value)));
     }
+    if let Some(charge) = profile.max_charge {
+        fact("Max charge", fmt_num(f64::from(charge)));
+    }
     if let Some(minutes) = profile.decay_minutes {
         fact("Spoils after", fmt_duration(names, minutes * 60.0));
     }
@@ -202,7 +205,7 @@ pub(super) fn stat_label(names: Names, effect: &Effect) -> (String, Option<&'sta
         _ => schema::limb_field(stat),
     };
     if let Some(field) = field {
-        return (field_label(names, field), Some(field));
+        return (names.field(field), Some(field));
     }
     let label = match (&effect.target, stat) {
         (Target::Component(c), "opiateAmount") if c == "Painkillers" => "Opioids",
@@ -211,47 +214,9 @@ pub(super) fn stat_label(names: Names, effect: &Effect) -> (String, Option<&'sta
         (Target::Component(c), "amount") if c == "SleepingPills" => "Sleeping pills",
         (_, "disinfect") => "Disinfection",
         (_, "vomit") => "Vomiting",
-        _ => return (readable_stat(names, stat), None),
+        _ => return (names.stat(stat), None),
     };
     (names.text(label).into_owned(), None)
-}
-
-pub(super) fn field_label(names: Names, field: &FieldSpec) -> String {
-    if field.label != field.key {
-        names.text(field.label).into_owned()
-    } else {
-        readable_stat(names, field.key)
-    }
-}
-
-fn readable_stat(names: Names, key: &str) -> String {
-    let stem = key
-        .strip_suffix("Amount")
-        .or_else(|| key.strip_suffix("Level"))
-        .unwrap_or(key);
-    if let Some(text) = names
-        .locale
-        .and_then(|locale| locale.other(key).or_else(|| locale.moodle_name(stem)))
-    {
-        return strip_rich_text(text);
-    }
-    names.text(&humanize(stem)).into_owned()
-}
-
-/// `bandageSlowAmount` → `Bandage slow amount`.
-fn humanize(key: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in key.chars().enumerate() {
-        if i == 0 {
-            out.extend(c.to_uppercase());
-        } else if c.is_uppercase() {
-            out.push(' ');
-            out.extend(c.to_lowercase());
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// One effect as a readable line, coloured by whether it helps.

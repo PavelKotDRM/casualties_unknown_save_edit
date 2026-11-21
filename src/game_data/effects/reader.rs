@@ -199,6 +199,100 @@ impl<'a> Reader<'a> {
         self.callee(token).is_some_and(|c| c.params.contains(&true))
     }
 
+    fn condition_use(&self, token: Token, on_limb: bool) -> Option<ConditionUse> {
+        if self.has_float_param(token) {
+            return None;
+        }
+        let method = self.assembly.methods().get(&token)?.value().clone();
+        let code: Vec<_> = method.instructions().collect();
+        let condition = |instruction: &Instruction| {
+            self.field(&instruction.operand)
+                .is_some_and(|(owner, field)| owner == "Item" && field == "condition")
+        };
+        let stores: Vec<_> = code
+            .iter()
+            .enumerate()
+            .filter(|(_, instruction)| instruction.mnemonic == "stfld" && condition(instruction))
+            .collect();
+        let [(index, store)] = stores.as_slice() else {
+            return None;
+        };
+        let subtraction = code.get(index.checked_sub(3)?..=*index)?;
+        if subtraction[0].mnemonic != "ldfld"
+            || !condition(subtraction[0])
+            || subtraction[2].mnemonic != "sub"
+        {
+            return None;
+        }
+        let StaticValue::Number(cost) =
+            instruction_value(subtraction[1], self.assembly.userstrings())?
+        else {
+            return None;
+        };
+        if !cost.is_finite() || cost <= 0.0 {
+            return None;
+        }
+        // Transferred or destroyed items do not have a repeat-use budget.
+        if code.iter().any(|instruction| {
+            matches!(instruction.mnemonic, "call" | "callvirt")
+                && match instruction.operand {
+                    Operand::Token(token) => self.callee(token).is_some_and(|callee| {
+                        matches!(callee.owner.as_str(), "Object" | "UnityEngine.Object")
+                            && callee.name == "Destroy"
+                    }),
+                    _ => false,
+                }
+        }) {
+            return None;
+        }
+        if code.iter().any(|instruction| {
+            instruction.rva >= store.rva
+                && instruction
+                    .branch_targets
+                    .iter()
+                    .any(|target| *target <= store.rva)
+        }) {
+            return None;
+        }
+        let mut rule = ConditionUse {
+            on_limb,
+            cost,
+            minimum: 0.0,
+            inclusive: false,
+        };
+        for (position, guard) in code[..*index].windows(3).enumerate() {
+            if guard[0].mnemonic != "ldfld" || !condition(guard[0]) {
+                continue;
+            }
+            if position == index - 3 {
+                continue;
+            }
+            let branch = &guard[2];
+            if !branch
+                .branch_targets
+                .first()
+                .is_some_and(|target| *target > store.rva)
+            {
+                return None;
+            }
+            let inclusive = match branch.mnemonic {
+                "ble" | "ble.s" | "ble.un" | "ble.un.s" => false,
+                "blt" | "blt.s" | "blt.un" | "blt.un.s" => true,
+                _ => return None,
+            };
+            let Some(StaticValue::Number(minimum)) =
+                instruction_value(guard[1], self.assembly.userstrings())
+            else {
+                return None;
+            };
+            if minimum > rule.minimum || (minimum == rule.minimum && !inclusive) {
+                rule.minimum = minimum;
+                rule.inclusive = inclusive;
+            }
+        }
+        Some(rule)
+    }
+
     pub(super) fn item_profile(&self, def: &Definition) -> ItemProfile {
         let number = |key: &str| super::number_field(&def.fields, key);
         let flag = |key: &str| super::bool_field(&def.fields, key).unwrap_or(false);
@@ -215,11 +309,13 @@ impl<'a> Reader<'a> {
                 on_limb,
                 effects: out.effects(),
                 condition_per_use: (out.condition.b < 0.0).then_some(-out.condition.b),
+                condition_use: self.condition_use(*token, on_limb),
                 contents: out.contents.first().map(|(kind, ml)| (*kind, ml.b)),
             });
         }
         ItemProfile {
             value: number("value"),
+            max_charge: number("maxCharge"),
             decay_minutes: number("decayMinutes").filter(|m| *m > 0.0),
             recognition: def.recognition,
             qualities: def.qualities.clone(),

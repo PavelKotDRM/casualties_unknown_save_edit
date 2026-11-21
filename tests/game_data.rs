@@ -13,6 +13,204 @@ fn runtime_catalogues_and_rules_come_from_the_installed_game() {
     };
     let data = cu_save_editor::game_data::load_game_data(Path::new(&game_dir)).unwrap();
     let metadata = &data.metadata;
+    let assembly = dotscope::CilObject::from_path_with_validation(
+        Path::new(&game_dir)
+            .join("CasualtiesUnknown_Data")
+            .join("Managed")
+            .join("Assembly-CSharp.dll"),
+        dotscope::ValidationConfig::minimal(),
+    )
+    .unwrap();
+    let setup = assembly
+        .methods()
+        .iter()
+        .find_map(|entry| {
+            let method = entry.value();
+            let owner = method.declaring_type.get()?.upgrade()?;
+            (owner.name == "Item" && method.name == "SetupItems").then(|| method.clone())
+        })
+        .unwrap();
+    let instructions: Vec<_> = setup.instructions().collect();
+    let native_ids: std::collections::BTreeSet<_> = instructions
+        .windows(2)
+        .filter_map(|pair| {
+            if pair[0].mnemonic != "ldstr" || pair[1].mnemonic != "newobj" {
+                return None;
+            }
+            let dotscope::assembly::Operand::Token(constructor) = pair[1].operand else {
+                return None;
+            };
+            if !assembly
+                .methods()
+                .get(&constructor)?
+                .value()
+                .signature
+                .params
+                .is_empty()
+            {
+                return None;
+            }
+            let dotscope::assembly::Operand::Token(token) = pair[0].operand else {
+                return None;
+            };
+            assembly
+                .userstrings()?
+                .get((token.value() & 0x00ff_ffff) as usize)
+                .ok()
+                .map(|value| value.to_string_lossy())
+        })
+        .collect();
+    assert_eq!(native_ids.len(), 300, "native item registry size");
+    assert_eq!(
+        data.items
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        native_ids
+    );
+    assert_eq!(
+        data.effects
+            .items
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        native_ids
+    );
+    for (id, weight, value, charge) in [
+        ("smallbattery", 0.1, 6.0, 50.0),
+        ("mediumbattery", 0.2, 12.0, 100.0),
+        ("largebattery", 0.5, 20.0, 300.0),
+    ] {
+        assert_eq!(data.items[id].weight, weight, "weight of {id}");
+        assert!(data.items[id].item_tags.contains("battery"));
+        assert_eq!(data.effects.items[id].value, Some(value), "value of {id}");
+        assert_eq!(
+            data.effects.items[id].max_charge,
+            Some(charge),
+            "charge of {id}"
+        );
+        assert_eq!(metadata.battery_charges[id], charge);
+        let item =
+            cu_save_editor::model::new_item(id, &cu_save_editor::model::Location::Slot(0)).unwrap();
+        assert_eq!(item["condition"], 1.0, "new battery charge");
+        assert!(metadata.items.iter().any(|item| item.id == id));
+    }
+    assert_eq!(data.items["plushie"].weight, 0.15);
+    assert!(data.items["plushie"].destroy_at_zero_condition);
+    assert!(!data.items["plushie"].item_tags.contains("battery"));
+    assert_eq!(data.effects.items["plushie"].value, Some(5.0));
+    assert!(
+        metadata.item_components_error.is_none(),
+        "{:?}",
+        metadata.item_components_error
+    );
+    let locale = cu_save_editor::locale::Locale::load(
+        &Path::new(&game_dir)
+            .join("CasualtiesUnknown_Data")
+            .join("Lang")
+            .join("EN.json"),
+    );
+    let names = cu_save_editor::ui::Names {
+        locale: locale.as_ref(),
+        interface_language: cu_save_editor::ui::InterfaceLanguage::English,
+    };
+    assert_eq!(
+        (0..6).map(|slot| names.hold_slot(slot)).collect::<Vec<_>>(),
+        [
+            "Right hand",
+            "Left hand",
+            "Mouth",
+            "Upper back",
+            "Middle back",
+            "Lower back"
+        ]
+    );
+    let water = cu_save_editor::game_data::component_key("WaterContainerItem");
+    for (id, stats) in &data.items {
+        if let Some(capacity) = stats.liquid_capacity {
+            let components = cu_save_editor::model::new_item_components(id).unwrap();
+            let expected: Vec<_> = data.effects.items[id]
+                .default_contents
+                .iter()
+                .map(|(liquid, amount)| serde_json::json!({"liquidId": liquid, "amount": amount}))
+                .collect();
+            assert_eq!(
+                components[&water]["stack"],
+                serde_json::json!(expected),
+                "contents of {id}"
+            );
+            let item =
+                cu_save_editor::model::new_item(id, &cu_save_editor::model::Location::Slot(0))
+                    .unwrap();
+            let total: f64 = expected
+                .iter()
+                .map(|entry| entry["amount"].as_f64().unwrap())
+                .sum();
+            assert!(
+                (item["condition"].as_f64().unwrap() - total / f64::from(capacity)).abs() < 0.0001,
+                "condition of {id}"
+            );
+        }
+    }
+    let battery = cu_save_editor::game_data::component_key("BatteryItem");
+    let flashlight = cu_save_editor::model::new_item_components("flashlight").unwrap();
+    assert_eq!(flashlight[&battery]["batteryType"], "mediumbattery");
+    assert_eq!(flashlight[&battery]["maxCharge"], 100.0);
+    assert_eq!(flashlight[&battery]["batteryWasFavourited"], false);
+    assert_eq!(metadata.battery_limits["flashlight"], 100.0);
+    assert_eq!(
+        cu_save_editor::model::battery_capacity("flashlight", "smallbattery", metadata).unwrap(),
+        50.0
+    );
+    assert!(
+        cu_save_editor::model::battery_capacity("flashlight", "largebattery", metadata).is_err()
+    );
+    for (id, components) in &metadata.item_components {
+        if let Some(component) = components.get(&battery) {
+            assert!(
+                metadata.battery_limits.contains_key(id),
+                "battery limit of {id}"
+            );
+            match component["batteryType"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+            {
+                Some("smallbattery") => assert_eq!(component["maxCharge"], 50.0, "{id}"),
+                Some("mediumbattery") => assert_eq!(component["maxCharge"], 100.0, "{id}"),
+                Some("largebattery") => assert_eq!(component["maxCharge"], 300.0, "{id}"),
+                None => assert_eq!(component["maxCharge"], 0.0, "{id}"),
+                Some(other) => panic!("Unexpected default battery {other} in {id}"),
+            }
+        }
+    }
+    let bread = metadata.condition_uses["bread"][0];
+    assert_eq!(bread.cost, 0.34);
+    assert_eq!(
+        cu_save_editor::model::remaining_uses(1.0, bread).unwrap(),
+        3
+    );
+    assert!(
+        !metadata.condition_uses.contains_key("bandage"),
+        "minigames are not fixed uses"
+    );
+    assert!(
+        !metadata.condition_uses.contains_key("tourniquet"),
+        "transferred items are not repeatable"
+    );
+    assert!(
+        metadata
+            .condition_uses
+            .values()
+            .flatten()
+            .any(|rule| rule.minimum == 0.5 && rule.inclusive)
+    );
+    assert!(
+        metadata
+            .condition_uses
+            .values()
+            .flatten()
+            .any(|rule| rule.minimum == 0.1 && !rule.inclusive)
+    );
     assert!(
         metadata.moodles_error.is_none(),
         "{:?}",

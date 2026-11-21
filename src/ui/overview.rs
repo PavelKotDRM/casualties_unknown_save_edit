@@ -157,9 +157,12 @@ fn vitals(ui: &mut Ui, data: &Value, names: Names) {
                 let (Some(spec), Some(v)) = (schema::body_field(key), get_f64(body, key)) else {
                     continue;
                 };
-                ui.label(names.text(spec.label).to_string())
-                    .on_hover_text(spec.help);
-                super::mini_gauge(ui, spec, v, 120.0);
+                ui.label(names.field(spec)).on_hover_text(format!(
+                    "{}\n{}",
+                    names.text(spec.help),
+                    names.text("JSON key: {key}").replace("{key}", spec.key),
+                ));
+                super::mini_gauge(ui, spec, v, 120.0, names);
                 ui.colored_label(
                     value_color(spec, v as f32),
                     format!("{}{}", fmt_num(v), spec.unit),

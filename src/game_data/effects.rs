@@ -42,7 +42,9 @@ pub(super) fn parse(assembly: &CilObject) -> GameEffects {
     let reader = Reader::new(assembly);
     let mut effects = GameEffects::default();
     if let Some(method) = reader.find_method("Item", "SetupItems") {
-        for def in reader.definitions(&method, &["ItemInfo", "LiquidItemInfo"]) {
+        let info_types = super::il::item_info_types(assembly);
+        let owners: Vec<_> = info_types.iter().map(String::as_str).collect();
+        for def in reader.definitions(&method, &owners) {
             effects
                 .items
                 .insert(def.id.clone(), reader.item_profile(&def));

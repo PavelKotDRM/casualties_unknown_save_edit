@@ -56,6 +56,11 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Detect automatically" => Some("Найти автоматически"),
         "Add item…" => Some("Добавить предмет…"),
         "Add item" => Some("Добавить предмет"),
+        "Includes the game's default liquids, batteries and component state. Edit contents after adding." => {
+            Some(
+                "Добавляются жидкости, батареи и состояние компонентов по умолчанию из игры. Содержимое можно изменить после добавления.",
+            )
+        }
         "Location" => Some("Расположение"),
         "Unknown slot {index}" => Some("Неизвестный слот {index}"),
         "Mouth" => Some("Рот"),
@@ -134,6 +139,44 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
             Some("Статистика предмета недоступна. Синхронизируйте данные игры, чтобы увидеть вес.")
         }
         "Max charge" => Some("Максимальный заряд"),
+        "Charge" => Some("Заряд"),
+        "No battery" => Some("Нет батареи"),
+        "Uses remaining" => Some("Осталось использований"),
+        "Uses remaining (limb)" => Some("Осталось применений на конечность"),
+        "Calculated from the game's fixed condition cost and threshold. Other action requirements still apply." => {
+            Some(
+                "Рассчитывается по расходу состояния и порогу из игры. Остальные требования действия по-прежнему применяются.",
+            )
+        }
+        "Condition is calculated from contents. Edit the contents below." => {
+            Some("Состояние рассчитывается по содержимому. Измените содержимое ниже.")
+        }
+        "Saved state does not match the contents." => {
+            Some("Сохранённое состояние не соответствует содержимому.")
+        }
+        "Synchronize with contents" => Some("Синхронизировать с содержимым"),
+        "Invalid item components" => Some("Некорректные компоненты предмета"),
+        "Invalid item object" => Some("Некорректный объект предмета"),
+        "Invalid battery type" => Some("Некорректный тип батареи"),
+        "Invalid item condition" => Some("Некорректное состояние предмета"),
+        "Invalid item id" => Some("Некорректный ID предмета"),
+        "Invalid battery component" => Some("Некорректный компонент батареи"),
+        "Invalid liquid stack" => Some("Некорректный список жидкостей"),
+        "Invalid liquid amount" => Some("Некорректное количество жидкости"),
+        "Liquid total is not finite" => Some("Общий объём жидкости не является конечным числом"),
+        "Liquid condition is not finite" => Some("Состояние жидкости не является конечным числом"),
+        "Battery charge must be between zero and its maximum" => {
+            Some("Заряд батареи должен быть между нулём и максимумом")
+        }
+        "Invalid condition or item-use rule" => {
+            Some("Некорректное состояние или правило использования предмета")
+        }
+        "Item-use count exceeds the calculation limit" => {
+            Some("Число использований превышает предел расчёта")
+        }
+        "Battery compatibility for {id} is unavailable" => {
+            Some("Совместимость батарей для {id} неизвестна")
+        }
         "Battery" => Some("Батарея"),
         "Remove this component (use defaults)" => {
             Some("Удалить компонент (использовать значения по умолчанию)")

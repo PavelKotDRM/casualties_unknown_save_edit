@@ -47,24 +47,97 @@ pub(super) fn details(
     if ammunition_controls(ui, data, names, state, index) {
         return true;
     }
-    let Some(obj) = data
-        .get_mut("items")
-        .and_then(|a| a.get_mut(index))
-        .and_then(Value::as_object_mut)
-    else {
-        return changed;
+    let mut edited_item = item.clone();
+    let mut edited_components = match data.get("itemComponents") {
+        None => json!({}),
+        Some(Value::Array(components)) => {
+            components.get(index).cloned().unwrap_or_else(|| json!({}))
+        }
+        Some(_) => {
+            ui.colored_label(colors::BAD, names.text("Invalid item components"));
+            return false;
+        }
+    };
+    let metadata = crate::game_data::runtime::metadata();
+    let original_components = edited_components.clone();
+    let content_state = model::item_content_state(&item, &edited_components, metadata);
+    if let Err(error) = &content_state {
+        ui.colored_label(colors::BAD, names.text(error));
+    }
+    let derived = content_state
+        .as_ref()
+        .ok()
+        .and_then(|state| state.condition);
+    let read_only = derived.is_some() || def.is_some_and(|definition| definition.capacity > 0.0);
+    let Some(obj) = edited_item.as_object_mut() else {
+        ui.colored_label(colors::BAD, names.text("Invalid item object"));
+        return false;
     };
     card(ui, |ui| {
         ui.set_width(ui.available_width());
-        changed |= item_fields(ui, obj, &id, names);
+        changed |= item_fields(ui, obj, &id, names, derived, read_only);
     });
 
-    // Components
     ui.add_space(8.0);
     ui.label(RichText::new(names.text("Components").to_string()).strong());
-    let comps = ensure_components(data, index);
-    if let Some(comps) = comps {
-        changed |= components::components_editor(ui, comps, def, names);
+    let mut synchronize = false;
+    if let Ok(content) = &content_state {
+        let condition_mismatch = content.condition.is_some_and(|expected| {
+            item["condition"].as_f64().map(|condition| condition as f32) != Some(expected as f32)
+        });
+        let battery_mismatch = content.battery_capacity.is_some_and(|expected| {
+            edited_components
+                .get(crate::game_data::component_key("BatteryItem"))
+                .is_some_and(|battery| battery["maxCharge"].as_f64() != Some(expected))
+        });
+        if condition_mismatch || battery_mismatch {
+            ui.colored_label(
+                colors::WARN,
+                names.text("Saved state does not match the contents."),
+            );
+            synchronize = ui.button(names.text("Synchronize with contents")).clicked();
+        }
+    }
+    if edited_item["id"] == item["id"] {
+        let components_changed = if let Some(comps) = edited_components.as_object_mut() {
+            components::components_editor(ui, comps, &mut edited_item, def, names)
+        } else {
+            raw::subtree(ui, "item_components", "Components", &mut edited_components)
+        };
+        if components_changed || synchronize || edited_item["condition"] != item["condition"] {
+            match model::synchronize_item_state(&mut edited_item, &mut edited_components, metadata)
+            {
+                Ok(_) => changed = true,
+                Err(error) => {
+                    state.item_error = Some((index, error));
+                    changed = false;
+                }
+            }
+        }
+    }
+    if changed {
+        if edited_components != original_components {
+            match (
+                edited_components.as_object(),
+                ensure_components(data, index),
+            ) {
+                (Some(edited), Some(components)) => *components = edited.clone(),
+                _ => {
+                    state.item_error =
+                        Some((index, names.text("Invalid item components").into_owned()));
+                    changed = false;
+                }
+            }
+        }
+        if changed {
+            data["items"][index] = edited_item;
+            state.item_error = None;
+        }
+    }
+    if let Some((failed_index, error)) = &state.item_error
+        && *failed_index == index
+    {
+        ui.colored_label(colors::BAD, names.text(error));
     }
     changed
 }
@@ -395,7 +468,14 @@ fn warnings(
     }
 }
 
-fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str, names: Names) -> bool {
+fn item_fields(
+    ui: &mut Ui,
+    obj: &mut Map<String, Value>,
+    id: &str,
+    names: Names,
+    derived: Option<f64>,
+    read_only: bool,
+) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         row_label(ui, names, "Item id");
@@ -412,7 +492,7 @@ fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str, names: Names
     if let Some(slot) = obj.get_mut("condition") {
         ui.horizontal(|ui| {
             row_label(ui, names, "Condition");
-            let mut v = slot.as_f64().unwrap_or(1.0);
+            let mut v = derived.or_else(|| slot.as_f64()).unwrap_or(1.0);
             let spec = crate::schema::FieldSpec {
                 key: "condition",
                 label: "Condition",
@@ -423,12 +503,38 @@ fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str, names: Names
                 unit: "",
                 good: crate::schema::Good::High,
             };
-            if gauge_bar(ui, &spec, &mut v, 200.0) {
-                json::set_number_preserving(slot, v);
-                changed = true;
-            }
-            changed |= number_editor(ui, slot, 0.005);
+            ui.add_enabled_ui(!read_only, |ui| {
+                if gauge_bar(ui, &spec, &mut v, 200.0) {
+                    json::set_number_preserving(slot, v);
+                    changed = true;
+                }
+                if read_only {
+                    number_editor(ui, &mut json!(v), 0.005);
+                } else {
+                    changed |= number_editor(ui, slot, 0.005);
+                }
+            })
+            .response
+            .on_disabled_hover_text(
+                names.text("Condition is calculated from contents. Edit the contents below."),
+            );
         });
+    }
+    if !read_only && let Some(rules) = crate::game_data::runtime::metadata().condition_uses.get(id)
+    {
+        for rule in rules {
+            let mut item = Value::Object(obj.clone());
+            match uses_editor(ui, &mut item, *rule, names) {
+                Ok(true) => {
+                    *obj = item.as_object().expect("item object").clone();
+                    changed = true;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    ui.colored_label(colors::BAD, names.text(&error));
+                }
+            }
+        }
     }
     if let Some(mut fav) = get_bool(obj, "favourited") {
         ui.horizontal(|ui| {
@@ -467,6 +573,35 @@ fn item_fields(ui: &mut Ui, obj: &mut Map<String, Value>, id: &str, names: Names
     };
     changed |= other_fields(ui, "item_other", obj, &known);
     changed
+}
+
+fn uses_editor(
+    ui: &mut Ui,
+    item: &mut Value,
+    rule: crate::game_data::effects::ConditionUse,
+    names: Names,
+) -> Result<bool, String> {
+    let condition = item["condition"].as_f64().ok_or("Invalid item condition")?;
+    let mut count = model::remaining_uses(condition as f32, rule)?;
+    let full = model::remaining_uses(1.0, rule)?;
+    let maximum = full.max(count);
+    ui.horizontal(|ui| {
+        row_label(
+            ui,
+            names,
+            if rule.on_limb { "Uses remaining (limb)" } else { "Uses remaining" },
+        );
+        if ui
+            .add(egui::DragValue::new(&mut count).range(0..=maximum))
+            .on_hover_text(names.text("Calculated from the game's fixed condition cost and threshold. Other action requirements still apply."))
+            .changed()
+        {
+            model::set_remaining_uses(item, rule, count)
+        } else {
+            Ok(false)
+        }
+    })
+    .inner
 }
 
 /// Returns the component dictionary of item `index`, creating it if needed.

@@ -41,6 +41,7 @@ pub struct InventoryState {
     pub add_location: Option<Location>,
     /// Most recent failure to construct or add an item.
     pub add_error: Option<String>,
+    item_error: Option<(usize, String)>,
     balance_rule: model::BalanceRule,
     move_favourites: bool,
     balance_result: Option<Result<usize, String>>,
@@ -301,6 +302,94 @@ mod tests {
     use super::*;
     use crate::ui::InterfaceLanguage;
     use serde_json::json;
+
+    #[test]
+    #[allow(deprecated)]
+    fn viewing_contents_preserves_the_save_and_emptying_synchronizes_condition() {
+        use crate::game_data::{component_key, metadata::Metadata, runtime};
+        let water = component_key("WaterContainerItem");
+        let contents = json!({&water: {"stack": [{"liquidId": "water", "amount": 250.0}]}});
+        let _metadata = runtime::scoped_for_test(Metadata {
+            items: vec![catalog::ItemDef {
+                id: "drink",
+                category: "",
+                group: "",
+                wear_slot: "",
+                capacity: 500.0,
+            }],
+            item_components: [("drink".into(), contents.clone())].into(),
+            ..Default::default()
+        });
+        let names = Names {
+            locale: None,
+            interface_language: InterfaceLanguage::English,
+        };
+        let render =
+            |context: &egui::Context, input, data: &mut Value, state: &mut InventoryState| {
+                let mut changed = false;
+                let mut output = context.run_ui(input, |ui| {
+                    changed = details::details(ui, data, names, &HashMap::new(), state, 0);
+                });
+                output.textures_delta.clear();
+                (changed, output)
+            };
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 1000.0),
+            )),
+            ..Default::default()
+        };
+        for saved_components in [None, Some(contents.clone())] {
+            let context = egui::Context::default();
+            let mut state = InventoryState::default();
+            let mut data = json!({"items": [{"id": "drink", "slot": 0, "condition": 0.8, "label": "keep"}], "unrelated": 123});
+            if let Some(components) = saved_components {
+                data["itemComponents"] = json!([components]);
+            }
+            let original = data.clone();
+            let (changed, output) = render(&context, input(), &mut data, &mut state);
+            assert!(!changed);
+            assert_eq!(data, original);
+            if data.get("itemComponents").is_none() {
+                continue;
+            }
+            let empty = output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape
+                        && text.galley.text() == "Empty"
+                    {
+                        Some(text.pos + text.galley.rect.center().to_vec2())
+                    } else {
+                        None
+                    }
+                })
+                .expect("Empty button is visible");
+            let mut click = input();
+            click.events = vec![
+                egui::Event::PointerMoved(empty),
+                egui::Event::PointerButton {
+                    pos: empty,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+                egui::Event::PointerButton {
+                    pos: empty,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: Default::default(),
+                },
+            ];
+            assert!(render(&context, click, &mut data, &mut state).0);
+            assert_eq!(data["items"][0]["condition"], 0.0);
+            assert_eq!(data["itemComponents"][0][&water]["stack"], json!([]));
+            assert_eq!(data["items"][0]["label"], "keep");
+            assert_eq!(data["unrelated"], 123);
+        }
+    }
 
     fn hold_slot_metadata() -> crate::game_data::metadata::Metadata {
         let names = [

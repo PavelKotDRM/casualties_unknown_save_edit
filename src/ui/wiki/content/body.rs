@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn field_entry(names: Names, field: &FieldSpec, group: &str) -> Entry {
-    let mut entry = Entry::new(effects::field_label(names, field));
+    let mut entry = Entry::new(names.field(field));
     entry.subtitle = format!("{} · {}", names.text(group), field.key);
     entry.text = (!field.help.is_empty()).then(|| names.text(field.help).into_owned());
     let unit = if field.unit.is_empty() {

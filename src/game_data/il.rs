@@ -83,19 +83,37 @@ pub(super) fn bool_field(fields: &HashMap<String, StaticValue>, key: &str) -> Op
     number(fields, key).map(|value| value != 0.0)
 }
 
+pub(super) fn item_info_types(assembly: &CilObject) -> HashSet<String> {
+    assembly
+        .types()
+        .iter()
+        .filter_map(|entry| {
+            let ty = entry.value();
+            (ty.name == "ItemInfo" || ty.base_chain().any(|base| base.name == "ItemInfo"))
+                .then(|| ty.name.clone())
+        })
+        .collect()
+}
+
 pub(super) fn items(assembly: &CilObject) -> Result<HashMap<String, ItemStats>, String> {
     let reader = super::metadata::Reader::new(assembly);
     let method = reader
         .method("Item", "SetupItems")
         .ok_or("Assembly-CSharp.dll has no Item.SetupItems method")?;
+    let info_types = item_info_types(assembly);
     let constructors: HashMap<_, _> = assembly
         .methods()
         .iter()
         .filter_map(|entry| {
             let method = entry.value();
             let owner = method.declaring_type.get()?.upgrade()?;
-            (matches!(owner.name.as_str(), "ItemInfo" | "LiquidItemInfo") && method.name == ".ctor")
-                .then_some((method.token.value(), owner.name == "LiquidItemInfo"))
+            (info_types.contains(&owner.name) && method.name == ".ctor").then(|| {
+                (
+                    method.token.value(),
+                    owner.name == "LiquidItemInfo"
+                        || owner.base_chain().any(|base| base.name == "LiquidItemInfo"),
+                )
+            })
         })
         .collect();
     let strings = assembly.userstrings();
@@ -124,7 +142,7 @@ pub(super) fn items(assembly: &CilObject) -> Result<HashMap<String, ItemStats>, 
         let Some((owner, field)) = reader.field(&instruction.operand) else {
             continue;
         };
-        if !matches!(owner.as_str(), "ItemInfo" | "LiquidItemInfo") {
+        if !info_types.contains(&owner) {
             continue;
         }
         if let (Some(id), Some(previous)) = (&current_id, previous)
