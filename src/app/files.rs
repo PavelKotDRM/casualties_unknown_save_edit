@@ -44,7 +44,7 @@ impl EditorApp {
                     self.load(&path, false);
                 }
             }
-            Pending::RestoreBackup(path) => self.restore_backup(&path),
+            Pending::RestoreBackup { backup, target } => self.restore_backup(&backup, &target),
             Pending::Close => self.allow_close = true,
         }
     }

@@ -114,8 +114,13 @@ only when the document has unsaved changes.
 - **Backups** (*File → Backups…*). A timestamped copy goes to a
   `SaveEditorBackups` folder next to the save whenever a file is opened,
   restored over or overwritten after an outside change. The browser compares any
-  backup with the current save, restores, opens or deletes it, and cleans up
-  several at once (keep the newest *N*, or older than *N* days).
+  backup with the current save, restores it after confirmation, opens or deletes
+  it, and cleans up several at once (keep the newest *N*, or older than *N*
+  days). Restore also works if the original save is missing; an existing save
+  is backed up before replacement. The list includes all files in that folder;
+  check the backup and destination shown in the confirmation. Unsaved edits can
+  be saved or discarded; apply or revert unapplied raw text edits before
+  restoring.
 - **Automatic refresh.** Every 5 seconds the editor re-reads what the game can
   change: unlocks, endings, achievements, backups and the game installation. An
   unmodified save that changes on disk is reloaded; an edited one is left alone

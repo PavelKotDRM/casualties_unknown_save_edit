@@ -63,6 +63,13 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
             Some("Восстановление копии отменит несохранённые изменения. Сначала сохранить их?")
         }
         "Backups" => Some("Резервные копии"),
+        "Restore backup?" => Some("Восстановить резервную копию?"),
+        "Backup:" => Some("Резервная копия:"),
+        "Restore to:" => Some("Восстановить в:"),
+        "Restore target:" => Some("Файл для восстановления:"),
+        "The existing save will be backed up first." => {
+            Some("Существующее сохранение сначала будет скопировано.")
+        }
         "Replace the current save with this backup (the current file is backed up first)" => {
             Some("Заменить текущее сохранение этой копией (текущий файл будет сохранён отдельно)")
         }

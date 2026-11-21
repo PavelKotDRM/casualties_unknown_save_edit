@@ -80,6 +80,88 @@ fn backups_know_their_save_and_only_backups_can_be_deleted() {
 }
 
 #[test]
+fn restore_preserves_existing_save_and_original_backup_bytes() {
+    for format in [SaveFormat::Gzip, SaveFormat::PlainJson] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("my_run.sv");
+        let original = encode(&sample(), format);
+        fs::write(&path, &original).unwrap();
+        let backup = create_backup(&path).unwrap();
+        let mut newer = sample();
+        newer["runTime"] = json!(1);
+        let current = encode(&newer, format);
+        fs::write(&path, &current).unwrap();
+
+        let (file, previous) = restore_backup(&backup, &path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read(previous.unwrap()).unwrap(), current);
+        assert_eq!(fs::read(&backup).unwrap(), original);
+        assert_eq!(file.path, path);
+        assert_eq!(file.data, sample());
+        assert!(!file.changed_on_disk());
+
+        fs::remove_file(&path).unwrap();
+        let (_, previous) = restore_backup(&backup, &path).unwrap();
+        assert!(previous.is_none());
+        assert_eq!(fs::read(&path).unwrap(), original);
+    }
+}
+
+#[test]
+fn restore_rejects_bad_or_non_backup_files_without_touching_target() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("save.sv");
+    let other = directory.path().join("other.sv");
+    let current = encode(&sample(), SaveFormat::Gzip);
+    fs::write(&path, &current).unwrap();
+    fs::write(&other, &current).unwrap();
+    let other_backup = create_backup(&other).unwrap();
+    let bad = create_backup(&path).unwrap();
+    fs::write(&bad, b"not a save").unwrap();
+
+    assert!(restore_backup(&other, &path).is_err());
+    assert!(restore_backup(&bad, &path).is_err());
+    assert_eq!(fs::read(&path).unwrap(), current);
+    assert_eq!(list_backups(&path).len(), 2);
+    restore_backup(&other_backup, &path).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), current);
+}
+
+#[test]
+fn extensionless_saves_have_restorable_backups() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("save");
+    fs::write(&path, encode(&sample(), SaveFormat::PlainJson)).unwrap();
+    let backup = create_backup(&path).unwrap();
+    assert_eq!(list_backups(&path).len(), 1);
+    fs::remove_file(&path).unwrap();
+    restore_backup(&backup, &path).unwrap();
+    assert_eq!(SaveFile::load(&path).unwrap().data, sample());
+}
+
+#[test]
+fn restore_write_failure_preserves_current_save_and_its_backup() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("save.sv");
+    let original = encode(&sample(), SaveFormat::Gzip);
+    fs::write(&path, &original).unwrap();
+    let backup = create_backup(&path).unwrap();
+    let mut newer = sample();
+    newer["runTime"] = json!(123);
+    let current = encode(&newer, SaveFormat::Gzip);
+    fs::write(&path, &current).unwrap();
+    fs::create_dir(directory.path().join("save.sv.tmp")).unwrap();
+
+    assert!(restore_backup(&backup, &path).is_err());
+    assert_eq!(fs::read(&path).unwrap(), current);
+    assert!(
+        list_backups(&path)
+            .iter()
+            .any(|entry| { entry.path != backup && fs::read(&entry.path).unwrap() == current })
+    );
+}
+
+#[test]
 fn summary_reads_the_run_overview() {
     let summary = SaveSummary::of(&sample());
     assert_eq!(summary.items, 1);

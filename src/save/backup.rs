@@ -60,6 +60,34 @@ pub fn list_backups(save_path: &Path) -> Vec<BackupInfo> {
     list
 }
 
+/// Restores a validated backup, preserving the existing target before replacing it.
+pub fn restore_backup(
+    backup: &Path,
+    target: &Path,
+) -> Result<(super::SaveFile, Option<PathBuf>), SaveError> {
+    if backup.parent() != Some(backup_dir(target).as_path()) || !is_backup(backup) {
+        return Err(SaveError::Io(
+            backup.to_owned(),
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "backup is not in the target save's backup folder",
+            ),
+        ));
+    }
+    let mut file = super::SaveFile::load(backup)?;
+    let exists = target
+        .try_exists()
+        .map_err(|error| SaveError::Io(target.to_owned(), error))?;
+    let previous = if exists {
+        Some(create_backup(target)?)
+    } else {
+        None
+    };
+    super::file::write_atomic(target, &file.disk_bytes)?;
+    file.path = target.to_owned();
+    Ok((file, previous))
+}
+
 pub fn is_backup(path: &Path) -> bool {
     path.parent()
         .and_then(Path::file_name)

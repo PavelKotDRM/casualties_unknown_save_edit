@@ -251,6 +251,63 @@ mod tests {
     }
 
     #[test]
+    fn restore_waits_for_unsaved_changes_and_preserves_them_on_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("save.sv");
+        let document = json!({"body": {}, "limbs": [], "items": [], "runTime": 12});
+        std::fs::write(&path, save::encode(&document, SaveFormat::Gzip)).unwrap();
+        let backup = save::create_backup(&path).unwrap();
+        let mut app = app();
+        app.load(&path, false);
+        app.save.as_mut().unwrap().data["runTime"] = json!(20);
+        app.backup_action(ui::backups::BackupAction::Restore {
+            backup: backup.clone(),
+            target: path.clone(),
+        });
+        assert!(matches!(app.pending, Some(Pending::RestoreBackup { .. })));
+        assert_eq!(app.save.as_ref().unwrap().data["runTime"], json!(20));
+
+        std::fs::write(&backup, b"corrupted").unwrap();
+        let pending = app.pending.take().unwrap();
+        app.perform(pending);
+        assert!(app.is_dirty());
+        assert_eq!(app.save.as_ref().unwrap().data["runTime"], json!(20));
+        assert_eq!(save::SaveFile::load(&path).unwrap().data, document);
+    }
+
+    #[test]
+    fn restore_refuses_unapplied_raw_text() {
+        let mut app = app();
+        app.raw.text_dirty = true;
+        app.backup_action(ui::backups::BackupAction::Restore {
+            backup: PathBuf::from("backup"),
+            target: PathBuf::from("save"),
+        });
+        assert!(app.pending.is_none());
+        assert!(matches!(app.status, Some((_, Level::Error, _))));
+        assert!(app.raw.text_dirty);
+    }
+
+    #[test]
+    fn successful_restore_opens_a_clean_document_and_resets_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("save.sv");
+        let document = json!({"body": {}, "limbs": [], "items": [], "runTime": 12});
+        std::fs::write(&path, save::encode(&document, SaveFormat::Gzip)).unwrap();
+        let backup = save::create_backup(&path).unwrap();
+        let mut app = app();
+        app.load(&path, false);
+        app.save.as_mut().unwrap().data["runTime"] = json!(20);
+        app.commit();
+
+        app.restore_backup(&backup, &path);
+        assert_eq!(app.save.as_ref().unwrap().data, document);
+        assert!(!app.is_dirty());
+        assert!(!app.history.can_undo());
+        assert!(app.last_backup.as_ref().unwrap().is_file());
+    }
+
+    #[test]
     fn undo_history_is_bounded() {
         let mut history = UndoStack::new(0);
         for value in 1..=201 {

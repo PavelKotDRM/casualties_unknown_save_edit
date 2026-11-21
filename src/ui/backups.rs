@@ -23,7 +23,7 @@ pub enum BackupAction {
     /// Back up the target save now.
     Create,
     /// Replace the target save with this backup.
-    Restore(PathBuf),
+    Restore { backup: PathBuf, target: PathBuf },
     /// Open the backup itself in the editor.
     Open(PathBuf),
     /// Delete these backups.
@@ -46,7 +46,7 @@ pub struct BackupBrowser {
 pub struct BackupList {
     /// Save whose backups are listed.
     target: Option<PathBuf>,
-    /// Backups of [`Self::target`], newest first.
+    /// Backups in the target's backup folder, newest first.
     list: Vec<BackupInfo>,
     /// Selected backup.
     selected: Option<PathBuf>,
@@ -58,6 +58,8 @@ pub struct BackupList {
     checked: BTreeSet<PathBuf>,
     /// Backups waiting for a delete confirmation.
     confirm_delete: Option<Vec<PathBuf>>,
+    /// Backup and destination waiting for restore confirmation.
+    confirm_restore: Option<(PathBuf, PathBuf)>,
     /// Cleanup rule being edited.
     cleanup: Cleanup,
     /// What the list was built from, to notice changes on disk.
@@ -74,6 +76,7 @@ impl Default for BackupList {
             target_summary: None,
             checked: BTreeSet::new(),
             confirm_delete: None,
+            confirm_restore: None,
             cleanup: Cleanup::KeepNewest(10),
             stamp: Vec::new(),
         }
@@ -135,6 +138,9 @@ impl BackupList {
     /// Re-reads the backup list of `target`, keeping the selection, checks
     /// and a pending confirmation for backups that still exist.
     pub fn refresh(&mut self, target: Option<PathBuf>) {
+        if self.target != target {
+            self.confirm_restore = None;
+        }
         self.list = target
             .as_deref()
             .map(save::list_backups)
@@ -160,6 +166,13 @@ impl BackupList {
             .is_some_and(|paths| !paths.iter().all(exists))
         {
             self.confirm_delete = None;
+        }
+        if self
+            .confirm_restore
+            .as_ref()
+            .is_some_and(|(path, _)| !exists(path))
+        {
+            self.confirm_restore = None;
         }
         self.preview = None;
     }
@@ -252,6 +265,32 @@ impl BackupBrowser {
         })
         .map(|shown| shown.response.rect);
         self.open = open;
+        if !open {
+            self.confirm_restore = None;
+        }
+        if let Some((backup, target)) = self.confirm_restore.clone() {
+            egui::Modal::new(egui::Id::unique("confirm_restore_backup")).show(ctx, |ui| {
+                ui.heading(names.text("Restore backup?").to_string());
+                ui.label(names.text("Backup:").to_string());
+                ui.label(RichText::new(backup.display().to_string()).monospace());
+                ui.label(names.text("Restore to:").to_string());
+                ui.label(RichText::new(target.display().to_string()).monospace());
+                ui.label(
+                    names
+                        .text("The existing save will be backed up first.")
+                        .to_string(),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button(names.text("Restore").to_string()).clicked() {
+                        action = Some(BackupAction::Restore { backup, target });
+                        self.confirm_restore = None;
+                    }
+                    if ui.button(names.text("Cancel").to_string()).clicked() {
+                        self.confirm_restore = None;
+                    }
+                });
+            });
+        }
         action
     }
 
@@ -261,7 +300,7 @@ impl BackupBrowser {
             return;
         };
         ui.horizontal_wrapped(|ui| {
-            ui.label(names.text("Backups of").to_string());
+            ui.label(names.text("Restore target:").to_string());
             ui.label(RichText::new(target.display().to_string()).monospace());
         });
         ui.horizontal_wrapped(|ui| {
@@ -493,8 +532,9 @@ impl BackupBrowser {
                         .to_string(),
                 )
                 .clicked()
+                && let Some(target) = self.target.clone()
             {
-                *action = Some(BackupAction::Restore(path.clone()));
+                self.confirm_restore = Some((path.clone(), target));
             }
             if ui
                 .add_enabled(
@@ -571,10 +611,12 @@ mod tests {
         browser.show_for(Some(path.clone()));
         browser.checked.insert(first.clone());
         browser.confirm_delete = Some(vec![first.clone()]);
+        browser.confirm_restore = Some((first.clone(), path.clone()));
 
         // Nothing changed: the state is kept as is.
         browser.refresh_if_changed(Some(path.clone()));
         assert_eq!(browser.confirm_delete, Some(vec![first.clone()]));
+        assert_eq!(browser.confirm_restore, Some((first.clone(), path.clone())));
 
         // A new backup appears: the list grows, checks stay.
         let third = save::create_backup(&path).unwrap();
@@ -587,6 +629,7 @@ mod tests {
         browser.refresh_if_changed(Some(path.clone()));
         assert_eq!(browser.checked().count(), 0);
         assert_eq!(browser.confirm_delete, None);
+        assert_eq!(browser.confirm_restore, None);
 
         let old = save::old_backups(&browser.list, Cleanup::KeepNewest(1), SystemTime::now());
         assert_eq!(old.len(), 1);

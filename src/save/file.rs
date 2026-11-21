@@ -52,7 +52,7 @@ impl SaveFile {
     }
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), SaveError> {
     let io = |error| SaveError::Io(path.to_owned(), error);
     let mut temporary = path.as_os_str().to_owned();
     temporary.push(".tmp");

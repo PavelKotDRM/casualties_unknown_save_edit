@@ -36,7 +36,7 @@ impl EditorApp {
                 ui.heading(language.text("Unsaved changes").to_string());
                 let message = match &pending {
                     Pending::Close => language.text("Save your changes before closing?"),
-                    Pending::RestoreBackup(_) => language
+                    Pending::RestoreBackup { .. } => language
                         .text("Restoring a backup discards your unsaved changes. Save them first?"),
                     _ => language.text("Save your changes before continuing?"),
                 };
@@ -67,7 +67,9 @@ impl EditorApp {
                         return; // saving failed; keep the editor open
                     }
                 }
-                if let Some(s) = self.save.as_mut() {
+                if !matches!(pending, Pending::RestoreBackup { .. })
+                    && let Some(s) = self.save.as_mut()
+                {
                     s.data = self.clean.clone();
                 }
                 let close = matches!(pending, Pending::Close);

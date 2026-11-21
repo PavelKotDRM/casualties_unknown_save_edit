@@ -108,7 +108,7 @@ enum Pending {
     Open(PathBuf),
     OpenDialog,
     Reload,
-    RestoreBackup(PathBuf),
+    RestoreBackup { backup: PathBuf, target: PathBuf },
     Close,
 }
 
