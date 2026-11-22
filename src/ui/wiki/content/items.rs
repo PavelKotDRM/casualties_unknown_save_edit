@@ -579,6 +579,7 @@ mod tests {
             crafting_icons_error: None,
             drop_sources: &drop_sources,
             quality_filter: None,
+            recipe_filter: None,
             item_sort: ItemSort::Name,
             item_sort_descending: false,
             unlocks: &unlocks,

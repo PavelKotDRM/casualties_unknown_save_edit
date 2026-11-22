@@ -122,6 +122,10 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Search all sections…" => Some("Поиск по всем разделам…"),
         "Search this section…" => Some("Поиск в этом разделе…"),
         "Show matching items or liquids" => Some("Показать подходящие предметы или жидкости"),
+        "Show recipes for this element" => Some("Показать рецепты этого элемента"),
+        "Open this recipe" => Some("Открыть этот рецепт"),
+        "Recipes for: {name}" => Some("Рецепты: {name}"),
+        "Recipe #{number}: {name}" => Some("Рецепт №{number}: {name}"),
         "Matching crafting quality: {quality} ≥{amount}" => {
             Some("Требуемое качество для создания: {quality} ≥{amount}")
         }

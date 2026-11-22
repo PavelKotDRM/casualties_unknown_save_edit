@@ -1,20 +1,45 @@
 //! Game-derived crafting recipes and rules.
 
 use super::super::effects;
-use super::super::{CraftingTree, TreeNode, TreeNodeKind};
+use super::super::{CraftingTree, RecipeFilter, RecipeTarget, TreeNode, TreeNodeKind, WikiLink};
 use super::*;
 use crate::game_data::crafting::{CraftingIngredient, CraftingRecipe, RecipeCategory};
 use std::collections::HashSet;
 
 pub(super) fn recipes(sources: &Sources<'_>) -> Vec<Entry> {
-    let mut entries = vec![rules(sources.names)];
+    let filter = sources.recipe_filter.as_ref();
+    let mut entries = if filter.is_some() {
+        Vec::new()
+    } else {
+        vec![rules(sources.names)]
+    };
     entries.extend(
         sources
             .crafting
             .iter()
+            .filter(|recipe| filter.is_none_or(|filter| filter.matches(recipe)))
             .map(|recipe| recipe_entry(sources.names, sources.effects, sources.crafting, recipe)),
     );
     entries
+}
+
+fn producers_link(names: Names<'_>, title: &str, id: &str, is_liquid: bool) -> WikiLink {
+    WikiLink::Recipes(RecipeFilter {
+        target: RecipeTarget::Produces {
+            id: id.to_owned(),
+            is_liquid,
+        },
+        label: title.to_owned(),
+        click_hint: names.text("Show recipes for this element").into_owned(),
+    })
+}
+
+fn recipe_link(names: Names<'_>, game_effects: &GameEffects, recipe: &CraftingRecipe) -> WikiLink {
+    WikiLink::Recipes(RecipeFilter {
+        target: RecipeTarget::Recipe(recipe.index),
+        label: result_name(names, game_effects, recipe),
+        click_hint: names.text("Open this recipe").into_owned(),
+    })
 }
 
 fn rules(names: Names<'_>) -> Entry {
@@ -156,10 +181,27 @@ fn crafting_tree(
         } else {
             TreeNodeKind::Item
         },
-        result_name,
+        result_name.clone(),
         Some(result_detail(names, recipe)),
         (!recipe.result_is_liquid).then(|| recipe.result_id.clone()),
     );
+    // With a single recipe the link would only lead back to this card.
+    if recipes
+        .iter()
+        .filter(|candidate| {
+            candidate.result_id == recipe.result_id
+                && candidate.result_is_liquid == recipe.result_is_liquid
+        })
+        .nth(1)
+        .is_some()
+    {
+        root.link = Some(producers_link(
+            names,
+            &result_name,
+            &recipe.result_id,
+            recipe.result_is_liquid,
+        ));
+    }
     root.children.push(recipe_node(
         names,
         game_effects,
@@ -198,6 +240,9 @@ fn recipe_node(
         )),
         None,
     );
+    if depth > 0 {
+        node.link = Some(recipe_link(names, game_effects, recipe));
+    }
     for ingredient in &recipe.ingredients {
         let mut input = ingredient_node(names, game_effects, ingredient);
         if let Some(id) = ingredient.specific_id.as_deref() {
@@ -207,18 +252,28 @@ fn recipe_node(
                     candidate.result_id == id && candidate.result_is_liquid == ingredient.is_liquid
                 })
                 .collect();
+            if !producers.is_empty() {
+                input.link = Some(producers_link(
+                    names,
+                    &input.title,
+                    id,
+                    ingredient.is_liquid,
+                ));
+            }
             if ancestors.contains(id) {
                 node.children.push(input);
                 continue;
             }
             if depth >= 2 {
                 if !producers.is_empty() {
-                    input.children.push(TreeNode::new(
+                    let mut more = TreeNode::new(
                         TreeNodeKind::Recipe,
                         names.text("more"),
                         Some(names.text("Deeper recipes omitted").into_owned()),
                         None,
-                    ));
+                    );
+                    more.link = input.link.clone();
+                    input.children.push(more);
                 }
             } else if !producers.is_empty() {
                 let additional_producers = producers.len().saturating_sub(2);
@@ -232,12 +287,14 @@ fn recipe_node(
                     .collect();
                 ancestors.remove(id);
                 if additional_producers > 0 {
-                    input.children.push(TreeNode::new(
+                    let mut more = TreeNode::new(
                         TreeNodeKind::Recipe,
                         format!("+{additional_producers} {}", names.text("more")),
                         None,
                         None,
-                    ));
+                    );
+                    more.link = input.link.clone();
+                    input.children.push(more);
                 }
             }
         }
@@ -288,14 +345,14 @@ fn ingredient_node(
             Some(quality_ingredient_detail(names, ingredient)),
             None,
         );
-        node.quality_filter = Some(QualityFilter {
+        node.link = Some(WikiLink::Quality(QualityFilter {
             id: quality_id.to_owned(),
             label: quality,
             amount: ingredient.quality_amount,
             is_liquid: ingredient.is_liquid,
             ignored_id: ingredient.ignored_id.clone(),
             click_hint: names.text("Show matching items or liquids").into_owned(),
-        });
+        }));
         node
     }
 }
@@ -579,11 +636,53 @@ mod tests {
         let quality_node = &quality_tree.root.children[0].children[0];
         assert_eq!(quality_node.kind, TreeNodeKind::Quality);
         assert!(quality_node.children.is_empty());
-        assert!(quality_node.quality_filter.is_some());
+        assert!(matches!(quality_node.link, Some(WikiLink::Quality(_))));
 
         let cycle = recipe(3, "rope", vec![specific("rope")]);
         let cycle_tree =
             crafting_tree(names(), &game_effects, std::slice::from_ref(&cycle), &cycle);
         assert!(cycle_tree.root.children[0].children[0].children.is_empty());
+    }
+
+    #[test]
+    fn crafting_tree_nodes_link_to_the_recipes_that_make_them() {
+        let producer = recipe(0, "fiber", vec![specific("leaf")]);
+        let other_producer = recipe(1, "fiber", vec![specific("grass")]);
+        let root = recipe(2, "rope", vec![specific("fiber"), specific("leaf")]);
+        let recipes = [producer, other_producer, root.clone()];
+        let tree = crafting_tree(names(), &GameEffects::default(), &recipes, &root);
+
+        assert!(tree.root.link.is_none(), "only one recipe makes rope");
+        let root_recipe = &tree.root.children[0];
+        assert!(
+            root_recipe.link.is_none(),
+            "the card is already this recipe"
+        );
+        let fiber = &root_recipe.children[0];
+        let Some(WikiLink::Recipes(filter)) = &fiber.link else {
+            panic!("fiber should link to its recipes");
+        };
+        assert_eq!(
+            filter.target,
+            RecipeTarget::Produces {
+                id: "fiber".into(),
+                is_liquid: false
+            }
+        );
+        assert_eq!(filter.label, "Fiber");
+        assert!(
+            root_recipe.children[1].link.is_none(),
+            "nothing makes leaves"
+        );
+        let Some(WikiLink::Recipes(filter)) = &fiber.children[1].link else {
+            panic!("a producing recipe should link to itself");
+        };
+        assert_eq!(filter.target, RecipeTarget::Recipe(1));
+
+        let fiber_tree = crafting_tree(names(), &GameEffects::default(), &recipes, &recipes[0]);
+        assert!(
+            matches!(&fiber_tree.root.link, Some(WikiLink::Recipes(_))),
+            "two recipes make fiber"
+        );
     }
 }

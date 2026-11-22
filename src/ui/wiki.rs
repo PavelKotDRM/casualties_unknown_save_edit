@@ -39,7 +39,8 @@ pub struct WikiState {
     cache: WikiCache,
     hint_ending: Option<usize>,
     quality_filter: Option<QualityFilter>,
-    quality_filter_return: Option<QualityFilterReturn>,
+    recipe_filter: Option<RecipeFilter>,
+    history: Vec<NavigationStep>,
     pending_scroll: Option<PendingScroll>,
     item_sort: ItemSort,
     item_sort_descending: bool,
@@ -68,10 +69,70 @@ struct QualityFilter {
     click_hint: String,
 }
 
+/// Limits the crafting section to the recipes of one element or to one recipe.
+#[derive(Debug, Clone, PartialEq)]
+struct RecipeFilter {
+    target: RecipeTarget,
+    label: String,
+    click_hint: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum RecipeTarget {
+    Produces {
+        id: String,
+        is_liquid: bool,
+    },
+    /// The game's recipe index.
+    Recipe(usize),
+}
+
+impl RecipeFilter {
+    fn text(&self, names: Names<'_>) -> String {
+        match self.target {
+            RecipeTarget::Produces { .. } => names
+                .text("Recipes for: {name}")
+                .replace("{name}", &self.label),
+            RecipeTarget::Recipe(index) => names
+                .text("Recipe #{number}: {name}")
+                .replace("{number}", &(index + 1).to_string())
+                .replace("{name}", &self.label),
+        }
+    }
+
+    fn matches(&self, recipe: &crate::game_data::crafting::CraftingRecipe) -> bool {
+        match &self.target {
+            RecipeTarget::Produces { id, is_liquid } => {
+                recipe.result_id == *id && recipe.result_is_liquid == *is_liquid
+            }
+            RecipeTarget::Recipe(index) => recipe.index == *index,
+        }
+    }
+}
+
+/// Where clicking a crafting-tree node leads.
+#[derive(Debug, Clone, PartialEq)]
+enum WikiLink {
+    Quality(QualityFilter),
+    Recipes(RecipeFilter),
+}
+
+impl WikiLink {
+    fn click_hint(&self) -> &str {
+        match self {
+            Self::Quality(filter) => &filter.click_hint,
+            Self::Recipes(filter) => &filter.click_hint,
+        }
+    }
+}
+
+/// The view to restore when going back from a followed link.
 #[derive(Debug, Clone)]
-struct QualityFilterReturn {
+struct NavigationStep {
     section: Section,
     search: String,
+    quality_filter: Option<QualityFilter>,
+    recipe_filter: Option<RecipeFilter>,
     origin: Option<EntryAnchor>,
 }
 
@@ -88,8 +149,8 @@ enum PendingScroll {
     Entry(EntryAnchor),
 }
 
-struct QualityRequest {
-    filter: QualityFilter,
+struct LinkRequest {
+    link: WikiLink,
     origin: EntryAnchor,
 }
 
@@ -176,49 +237,67 @@ impl WikiState {
         self.cache = WikiCache::default();
     }
 
-    fn show_quality_matches(&mut self, filter: QualityFilter, origin: Option<EntryAnchor>) {
-        if self.quality_filter_return.is_none() {
-            self.quality_filter_return = Some(QualityFilterReturn {
-                section: self.section,
-                search: self.search.clone(),
-                origin,
-            });
+    fn follow_link(&mut self, link: WikiLink, origin: Option<EntryAnchor>) {
+        self.history.push(NavigationStep {
+            section: self.section,
+            search: std::mem::take(&mut self.search),
+            quality_filter: self.quality_filter.clone(),
+            recipe_filter: self.recipe_filter.clone(),
+            origin,
+        });
+        match link {
+            WikiLink::Quality(filter) => {
+                self.section = if filter.is_liquid {
+                    Section::Liquids
+                } else {
+                    Section::Items
+                };
+                self.set_filters(Some(filter), None);
+            }
+            WikiLink::Recipes(filter) => {
+                self.section = Section::Crafting;
+                self.set_filters(None, Some(filter));
+            }
         }
-        self.section = if filter.is_liquid {
-            Section::Liquids
-        } else {
-            Section::Items
-        };
-        self.search.clear();
-        self.quality_filter = Some(filter);
         self.pending_scroll = Some(PendingScroll::Top);
-        self.invalidate_quality_sections();
     }
 
-    fn clear_quality_filter(&mut self) {
-        self.quality_filter = None;
-        self.quality_filter_return = None;
-        self.invalidate_quality_sections();
+    fn has_filter(&self) -> bool {
+        self.quality_filter.is_some() || self.recipe_filter.is_some()
     }
 
-    fn back_from_quality_matches(&mut self) {
-        if let Some(previous) = self.quality_filter_return.take() {
-            self.section = previous.section;
-            self.search = previous.search;
-            self.pending_scroll = Some(
-                previous
-                    .origin
-                    .map_or(PendingScroll::Top, PendingScroll::Entry),
-            );
+    fn clear_filters(&mut self) {
+        self.history.clear();
+        self.set_filters(None, None);
+    }
+
+    fn go_back(&mut self) {
+        let Some(previous) = self.history.pop() else {
+            self.clear_filters();
+            return;
+        };
+        self.section = previous.section;
+        self.search = previous.search;
+        self.set_filters(previous.quality_filter, previous.recipe_filter);
+        self.pending_scroll = Some(
+            previous
+                .origin
+                .map_or(PendingScroll::Top, PendingScroll::Entry),
+        );
+    }
+
+    /// Rebuilds only the sections whose filter changed, so the others keep
+    /// their measured card heights for returning to a card.
+    fn set_filters(&mut self, quality: Option<QualityFilter>, recipe: Option<RecipeFilter>) {
+        if self.quality_filter != quality {
+            self.cache.sections[Section::Items as usize] = None;
+            self.cache.sections[Section::Liquids as usize] = None;
         }
-        self.clear_quality_filter();
-    }
-
-    /// Only the item and liquid lists depend on the quality filter; keeping the
-    /// other sections preserves their measured card heights for returning.
-    fn invalidate_quality_sections(&mut self) {
-        self.cache.sections[Section::Items as usize] = None;
-        self.cache.sections[Section::Liquids as usize] = None;
+        if self.recipe_filter != recipe {
+            self.cache.sections[Section::Crafting as usize] = None;
+        }
+        self.quality_filter = quality;
+        self.recipe_filter = recipe;
         self.cache.query = None;
         self.cache.results.clear();
     }
@@ -339,7 +418,7 @@ struct TreeNode {
     detail: Option<String>,
     icon_id: Option<String>,
     icon: Option<CachedTexture>,
-    quality_filter: Option<QualityFilter>,
+    link: Option<WikiLink>,
     children: Vec<TreeNode>,
 }
 
@@ -356,7 +435,7 @@ impl TreeNode {
             detail,
             icon_id,
             icon: None,
-            quality_filter: None,
+            link: None,
             children: Vec::new(),
         }
     }
@@ -375,14 +454,14 @@ impl TreeNode {
     }
 
     fn contains_quality(&self, filter: &QualityFilter) -> bool {
-        self.quality_filter.as_ref().is_some_and(|candidate| {
-            candidate.id.eq_ignore_ascii_case(&filter.id)
+        matches!(&self.link, Some(WikiLink::Quality(candidate))
+            if candidate.id.eq_ignore_ascii_case(&filter.id)
                 && candidate.is_liquid == filter.is_liquid
-                && candidate.amount >= filter.amount
-        }) || self
-            .children
-            .iter()
-            .any(|child| child.contains_quality(filter))
+                && candidate.amount >= filter.amount)
+            || self
+                .children
+                .iter()
+                .any(|child| child.contains_quality(filter))
     }
 }
 
@@ -635,6 +714,7 @@ struct Sources<'a> {
     crafting_icons_error: Option<&'a str>,
     drop_sources: &'a [crate::game_data::drops::DropSource],
     quality_filter: Option<QualityFilter>,
+    recipe_filter: Option<RecipeFilter>,
     item_sort: ItemSort,
     item_sort_descending: bool,
     unlocks: &'a GameProgress,
@@ -682,6 +762,7 @@ pub(crate) fn show(
         crafting_icons_error,
         drop_sources,
         quality_filter: state.quality_filter.clone(),
+        recipe_filter: state.recipe_filter.clone(),
         item_sort: state.item_sort,
         item_sort_descending: state.item_sort_descending,
         unlocks,
@@ -786,9 +867,10 @@ fn contents(ui: &mut Ui, state: &mut WikiState, sources: &mut Sources) {
                 {
                     state.section = section;
                     state.search.clear();
-                    if state.quality_filter.is_some() {
-                        state.clear_quality_filter();
+                    if state.has_filter() {
+                        state.clear_filters();
                         sources.quality_filter = None;
+                        sources.recipe_filter = None;
                     }
                 }
             }
@@ -819,16 +901,27 @@ fn contents(ui: &mut Ui, state: &mut WikiState, sources: &mut Sources) {
                 )
                 .on_hover_text(error);
             }
-            if let Some(filter) = state.quality_filter.clone() {
+            let filter_text = state
+                .quality_filter
+                .as_ref()
+                .map(|filter| filter.text(names))
+                .or_else(|| state.recipe_filter.as_ref().map(|filter| filter.text(names)));
+            if let Some(filter_text) = filter_text {
                 ui.horizontal_wrapped(|ui| {
+                    let mut changed = false;
                     if ui.button(names.text("Back")).clicked() {
-                        state.back_from_quality_matches();
-                        sources.quality_filter = None;
+                        state.go_back();
+                        changed = true;
                     }
-                    ui.label(filter.text(names));
+                    ui.label(filter_text);
                     if ui.button(names.text("Clear filter")).clicked() {
-                        state.clear_quality_filter();
-                        sources.quality_filter = None;
+                        state.clear_filters();
+                        changed = true;
+                    }
+                    if changed {
+                        // `sources` was built before this frame's navigation.
+                        sources.quality_filter = state.quality_filter.clone();
+                        sources.recipe_filter = state.recipe_filter.clone();
                     }
                 });
                 ui.separator();
@@ -983,7 +1076,7 @@ fn article(ui: &mut Ui, state: &mut WikiState, sources: &Sources, terms: &[Strin
             );
         }
         if let Some(request) = requested_filter {
-            state.show_quality_matches(request.filter, Some(request.origin));
+            state.follow_link(request.link, Some(request.origin));
         }
         return;
     }
@@ -1057,7 +1150,7 @@ fn article(ui: &mut Ui, state: &mut WikiState, sources: &Sources, terms: &[Strin
         ui.add_space(6.0);
     }
     if let Some(request) = requested_filter {
-        state.show_quality_matches(request.filter, Some(request.origin));
+        state.follow_link(request.link, Some(request.origin));
     }
 }
 
@@ -1067,7 +1160,7 @@ fn virtual_entry(
     entry: &mut Entry,
     terms: &[String],
     icons: Option<&HashMap<String, crate::game_data::crafting::CraftingIcon>>,
-    requested: &mut Option<QualityRequest>,
+    requested: &mut Option<LinkRequest>,
     scroll_target: Option<EntryAnchor>,
 ) -> usize {
     let height = entry.height.unwrap_or(160.0);
@@ -1099,9 +1192,9 @@ fn virtual_entry(
             egui::style::ScrollAnimation::none(),
         );
     }
-    if let Some(filter) = requested_filter {
-        *requested = Some(QualityRequest {
-            filter,
+    if let Some(link) = requested_filter {
+        *requested = Some(LinkRequest {
+            link,
             origin: EntryAnchor {
                 id,
                 offset: start - ui.clip_rect().top(),
@@ -1176,7 +1269,7 @@ fn entry_card(
     entry: &mut Entry,
     terms: &[String],
     icons: Option<&HashMap<String, crate::game_data::crafting::CraftingIcon>>,
-    requested_filter: &mut Option<QualityFilter>,
+    requested_filter: &mut Option<WikiLink>,
 ) {
     if entry.icon.is_none()
         && let (Some(id), Some(icon)) = (
@@ -1308,7 +1401,7 @@ fn render_tree_node(
     node: &mut TreeNode,
     terms: &[String],
     icons: Option<&HashMap<String, crate::game_data::crafting::CraftingIcon>>,
-    requested_filter: &mut Option<QualityFilter>,
+    requested_filter: &mut Option<WikiLink>,
     path: &mut Vec<usize>,
 ) -> egui::Rect {
     if node.icon.is_none()
@@ -1373,17 +1466,17 @@ fn render_tree_node(
                 });
             })
             .response;
-        if let Some(filter) = &node.quality_filter {
+        if let Some(link) = &node.link {
             let response = ui
                 .interact(
                     response.rect,
-                    ui.scope_id().with(("wiki_quality_filter", path.clone())),
+                    ui.scope_id().with(("wiki_tree_link", path.clone())),
                     egui::Sense::click(),
                 )
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text(&filter.click_hint);
+                .on_hover_text(link.click_hint());
             if response.clicked() {
-                *requested_filter = Some(filter.clone());
+                *requested_filter = Some(link.clone());
             }
         }
         let parent_rect = response.rect;
@@ -1472,6 +1565,7 @@ mod tests {
             crafting_icons_error: None,
             drop_sources: &[],
             quality_filter: None,
+            recipe_filter: None,
             item_sort: ItemSort::default(),
             item_sort_descending: false,
             unlocks,
@@ -1876,19 +1970,104 @@ mod tests {
             offset: 42.0,
         };
 
-        state.show_quality_matches(filter.clone(), Some(origin));
-        assert_eq!(state.section, Section::Liquids);
+        let recipes = RecipeFilter {
+            target: RecipeTarget::Produces {
+                id: "acid".into(),
+                is_liquid: true,
+            },
+            label: "Acid".into(),
+            click_hint: String::new(),
+        };
+        state.follow_link(WikiLink::Recipes(recipes.clone()), Some(origin));
+        assert_eq!(state.section, Section::Crafting);
         assert!(state.search.is_empty());
-        assert_eq!(state.quality_filter, Some(filter));
+        assert_eq!(state.recipe_filter, Some(recipes.clone()));
         assert_eq!(state.pending_scroll, Some(PendingScroll::Top));
         assert!(state.cache.query.is_none());
 
-        state.back_from_quality_matches();
+        let filtered_origin = EntryAnchor {
+            id: (Section::Crafting as usize, 0),
+            offset: 10.0,
+        };
+        state.follow_link(WikiLink::Quality(filter.clone()), Some(filtered_origin));
+        assert_eq!(state.section, Section::Liquids);
+        assert_eq!(state.quality_filter, Some(filter));
+        assert!(state.recipe_filter.is_none());
+
+        state.go_back();
+        assert_eq!(state.section, Section::Crafting);
+        assert_eq!(state.recipe_filter, Some(recipes));
+        assert!(state.quality_filter.is_none());
+        assert_eq!(
+            state.pending_scroll,
+            Some(PendingScroll::Entry(filtered_origin))
+        );
+
+        state.go_back();
         assert_eq!(state.section, Section::Crafting);
         assert_eq!(state.search, "acid");
         assert_eq!(state.pending_scroll, Some(PendingScroll::Entry(origin)));
-        assert!(state.quality_filter.is_none());
+        assert!(!state.has_filter());
         assert!(state.cache.query.is_none());
+    }
+
+    #[test]
+    fn recipe_filters_limit_the_crafting_section() {
+        let recipe = |index, result_id: &str| crate::game_data::crafting::CraftingRecipe {
+            index,
+            intelligence: 0,
+            category: crate::game_data::crafting::RecipeCategory::Materials,
+            special_known: false,
+            is_repair: false,
+            result_id: result_id.into(),
+            result_is_liquid: false,
+            result_amount: 1,
+            result_condition: 1.0,
+            dont_drain_result_liquid: false,
+            ingredients: Vec::new(),
+        };
+        let crafting = [recipe(0, "rope"), recipe(1, "cloth"), recipe(2, "rope")];
+        let names = Names {
+            locale: None,
+            interface_language: InterfaceLanguage::from_code(None, None),
+        };
+        let (stats, effects, unlocks) = (
+            HashMap::new(),
+            GameEffects::default(),
+            GameProgress::default(),
+        );
+        let mut sources = sources_for(names, &stats, &effects, &unlocks);
+        sources.crafting = &crafting;
+        assert_eq!(
+            entries(Section::Crafting, &sources).len(),
+            4,
+            "rules + recipes"
+        );
+
+        let filter = |target| RecipeFilter {
+            target,
+            label: "Rope".into(),
+            click_hint: String::new(),
+        };
+        sources.recipe_filter = Some(filter(RecipeTarget::Produces {
+            id: "rope".into(),
+            is_liquid: false,
+        }));
+        let subtitles: Vec<_> = entries(Section::Crafting, &sources)
+            .into_iter()
+            .map(|entry| entry.subtitle)
+            .collect();
+        assert_eq!(subtitles.len(), 2);
+        assert!(subtitles[0].ends_with("#1") && subtitles[1].ends_with("#3"));
+
+        sources.recipe_filter = Some(filter(RecipeTarget::Recipe(2)));
+        let found = entries(Section::Crafting, &sources);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].subtitle.ends_with("#3"));
+        assert_eq!(
+            sources.recipe_filter.unwrap().text(names),
+            "Recipe #3: Rope"
+        );
     }
 
     #[test]
