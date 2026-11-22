@@ -226,6 +226,8 @@ mod tests {
         ItemStats {
             category: String::new(),
             weight: 1.0,
+            trade_value: 0.0,
+            untradeable: false,
             scale_weight_with_condition: false,
             wearable: true,
             wear_slot: Some(slot.into()),

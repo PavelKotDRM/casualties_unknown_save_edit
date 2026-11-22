@@ -559,6 +559,8 @@ mod tests {
             ItemStats {
                 category: item.category.to_owned(),
                 weight: 0.0,
+                trade_value: 0.0,
+                untradeable: false,
                 scale_weight_with_condition: false,
                 wearable: false,
                 wear_slot: None,
@@ -592,6 +594,8 @@ mod tests {
             ItemStats {
                 category: "wearable".to_owned(),
                 weight: 1.0,
+                trade_value: 0.0,
+                untradeable: false,
                 scale_weight_with_condition: false,
                 wearable: true,
                 wear_slot: Some("head".to_owned()),

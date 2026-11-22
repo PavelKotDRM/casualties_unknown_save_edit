@@ -16,7 +16,7 @@ pub fn location_name(loc: &Location, names: Names) -> String {
         Location::Worn(w) if w.is_empty() => language
             .text("Unassigned (slot -1, no wear slot)")
             .into_owned(),
-        Location::Worn(w) => format!("{}: {w}", language.text("Worn")),
+        Location::Worn(w) => format!("{}: {}", language.text("Worn"), names.wear_slot(w)),
     }
 }
 pub(super) fn location_icon(loc: &Location) -> &'static str {

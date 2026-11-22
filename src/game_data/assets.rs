@@ -77,6 +77,115 @@ pub(super) fn moodle_palette(data_dir: &Path) -> Result<Vec<[u8; 3]>, String> {
     Ok(palette)
 }
 
+fn is_moodle_sprite(container: Option<&str>) -> bool {
+    container
+        .and_then(|path| path.split(['/', '\\']).next())
+        .is_some_and(|directory| directory.eq_ignore_ascii_case("moodles"))
+}
+
+fn is_item_sprite_source(container: Option<&str>) -> bool {
+    !container.is_some_and(|path| {
+        path.split(['/', '\\']).any(|directory| {
+            directory.eq_ignore_ascii_case("moodles")
+                || directory.eq_ignore_ascii_case("notedrawings")
+                || directory.eq_ignore_ascii_case("drawings")
+        })
+    })
+}
+
+pub(super) fn crafting_icons(
+    data_dir: &Path,
+    recipes: &[super::crafting::CraftingRecipe],
+    item_ids: impl IntoIterator<Item = String>,
+) -> (
+    HashMap<String, super::crafting::CraftingIcon>,
+    Option<String>,
+) {
+    let mut wanted: HashSet<String> = item_ids.into_iter().collect();
+    wanted.extend(
+        recipes
+            .iter()
+            .filter(|recipe| !recipe.result_is_liquid)
+            .map(|recipe| recipe.result_id.clone()),
+    );
+    if wanted.is_empty() {
+        return (HashMap::new(), None);
+    }
+
+    let studio = match Studio::open(data_dir) {
+        Ok(studio) => studio,
+        Err(error) => {
+            return (
+                HashMap::new(),
+                Some(format!("Cannot open game item sprites: {error}")),
+            );
+        }
+    };
+    let mut icons = HashMap::new();
+    let mut errors = Vec::new();
+    for sprite in studio.objects().filter(|object| object.class_id() == 213) {
+        let Some(name) = sprite.name() else {
+            continue;
+        };
+        let moodle_icon = is_moodle_sprite(sprite.container());
+        if !moodle_icon && (!wanted.contains(name) || !is_item_sprite_source(sprite.container())) {
+            continue;
+        }
+        let key = if moodle_icon {
+            format!("moodle:{}", name.to_ascii_lowercase())
+        } else {
+            name.to_owned()
+        };
+        if icons.contains_key(&key) {
+            continue;
+        }
+        let image = match sprite.decode_sprite(Default::default(), Default::default()) {
+            Ok(image) => image,
+            Err(error) => {
+                errors.push(format!("{key}: {error}"));
+                continue;
+            }
+        };
+        let valid_dimensions = image.width > 0
+            && image.height > 0
+            && image.width <= 512
+            && image.height <= 512
+            && image
+                .width
+                .checked_mul(image.height)
+                .and_then(|pixels| pixels.checked_mul(4))
+                .and_then(|bytes| usize::try_from(bytes).ok())
+                == Some(image.pixels.len());
+        if !valid_dimensions {
+            errors.push(format!("{key}: invalid sprite dimensions"));
+            continue;
+        }
+        icons.insert(
+            key,
+            super::crafting::CraftingIcon {
+                width: image.width,
+                height: image.height,
+                rgba: image.pixels,
+            },
+        );
+    }
+
+    let error = (!errors.is_empty()).then(|| {
+        let shown = errors
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
+        if errors.len() > 3 {
+            format!("{shown}; and {} more", errors.len() - 3)
+        } else {
+            shown
+        }
+    });
+    (icons, error)
+}
+
 fn enum_constant(assembly: &CilObject, owner: &str, name: &str) -> Option<i64> {
     assembly.types().iter().find_map(|entry| {
         let ty = entry.value();
@@ -222,7 +331,16 @@ fn prefab_fields(
                     .filter(|field| {
                         !field.flags.is_static()
                             && !field.flags.is_not_serialized()
-                            && field.flags.access() == FieldAttributes::PUBLIC
+                            && (field.flags.access() == FieldAttributes::PUBLIC
+                                || field.custom_attributes.iter().any(|(_, attribute)| {
+                                    matches!(
+                                        &attribute.constructor,
+                                        dotscope::metadata::typesystem::CilTypeReference::MemberRef(
+                                            member
+                                        ) if member.declaredby.name().as_deref()
+                                            == Some("SerializeField")
+                                    )
+                                }))
                     })
                     .map(|field| (field.name.clone(), field.signature.base.clone()))
                     .collect()
@@ -472,6 +590,17 @@ impl<'a> Cursor<'a> {
         Some(value)
     }
 
+    fn u16(&mut self) -> Option<u16> {
+        let value = u16::from_le_bytes(
+            self.bytes
+                .get(self.offset..self.offset.checked_add(2)?)?
+                .try_into()
+                .ok()?,
+        );
+        self.skip(2)?;
+        Some(value)
+    }
+
     fn reference(&mut self) -> Option<(i32, i64)> {
         let file = self.i32()?;
         let value = i64::from_le_bytes(
@@ -537,6 +666,172 @@ struct ContainerMetadata {
     max_item_weight: f32,
     encumbrance: f32,
     tags: HashSet<String>,
+}
+
+pub(super) fn drop_sources(
+    data_dir: &Path,
+    assembly: &CilObject,
+) -> Result<Vec<super::drops::DropSource>, String> {
+    use unity_rs_core::scene::{ObjectReference, resolve_object_reference};
+
+    let studio = Studio::open(data_dir).map_err(|error| error.to_string())?;
+    let fields = prefab_fields(assembly, "BuildingEntity")?;
+    let drop_fields = prefab_fields(assembly, "ItemDrop")?;
+    let mut sources = Vec::new();
+    for object in studio
+        .objects()
+        .filter(|object| object.class_id() == 114 && object.name() == Some("BuildingEntity"))
+    {
+        let bytes = object
+            .read_raw(4 * 1024 * 1024)
+            .map_err(|error| error.to_string())?;
+        let mut header = Cursor {
+            bytes: &bytes,
+            offset: 0,
+        };
+        let (file, path) = header
+            .reference()
+            .ok_or("BuildingEntity has a truncated GameObject reference")?;
+        let target = resolve_object_reference(
+            studio.collection(),
+            object.file_index(),
+            ObjectReference {
+                file_id: file,
+                path_id: path,
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .ok_or("BuildingEntity has a null GameObject reference")?;
+        let name = studio
+            .object_by_index(target.file_index, target.object_index)
+            .and_then(object_name)
+            .ok_or("BuildingEntity has no readable GameObject name")?;
+        let mut cursor = Cursor {
+            bytes: &bytes,
+            offset: mono_behaviour_data_offset(&bytes)
+                .ok_or_else(|| format!("Invalid BuildingEntity header for {name}"))?,
+        };
+        let mut values = serde_json::Map::new();
+        let mut drops = None;
+        let mut always_drops = None;
+        for (field, ty) in &fields {
+            match field.as_str() {
+                "itemsDropOnDestroy" => {
+                    drops = Some(
+                        read_item_drops(&mut cursor, assembly, &drop_fields)
+                            .ok_or_else(|| format!("Cannot read {name}.{field}"))?,
+                    );
+                }
+                "alwaysDrop" => {
+                    always_drops = Some(
+                        read_item_drops(&mut cursor, assembly, &drop_fields)
+                            .ok_or_else(|| format!("Cannot read {name}.{field}"))?,
+                    );
+                }
+                _ => {
+                    let value = cursor
+                        .value(assembly, ty)
+                        .ok_or_else(|| format!("Cannot read {name}.{field}"))?;
+                    values.insert(field.clone(), value);
+                }
+            }
+        }
+        let drops = drops.ok_or_else(|| format!("Missing {name}.itemsDropOnDestroy"))?;
+        let always_drops = always_drops.ok_or_else(|| format!("Missing {name}.alwaysDrop"))?;
+        let item_categories = values
+            .get("itemCategoriesToAdd")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("Invalid {name}.itemCategoriesToAdd"))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("Invalid category in {name}.itemCategoriesToAdd"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let guaranteed_drop_amount = values
+            .get("guaranteedDropAmount")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|amount| i32::try_from(amount).ok())
+            .filter(|amount| *amount >= 0)
+            .ok_or_else(|| format!("Invalid {name}.guaranteedDropAmount"))?;
+        let drop_chance_multiplier = values
+            .get("dropChanceMultiplier")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|multiplier| multiplier.is_finite() && *multiplier >= 0.0)
+            .map(|multiplier| multiplier as f32)
+            .filter(|multiplier| multiplier.is_finite())
+            .ok_or_else(|| format!("Invalid {name}.dropChanceMultiplier"))?;
+        if drops.is_empty()
+            && always_drops.is_empty()
+            && item_categories.is_empty()
+            && guaranteed_drop_amount == 0
+        {
+            continue;
+        }
+        let source = super::drops::DropSource {
+            name: normalize_drop_source_name(&name),
+            drops,
+            always_drops,
+            item_categories,
+            guaranteed_drop_amount,
+            drop_chance_multiplier,
+        };
+        if !sources.contains(&source) {
+            sources.push(source);
+        }
+    }
+    sources.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(sources)
+}
+
+fn read_item_drops(
+    cursor: &mut Cursor<'_>,
+    assembly: &CilObject,
+    fields: &[(String, TypeSignature)],
+) -> Option<Vec<super::drops::ItemDrop>> {
+    let count = usize::try_from(cursor.i32()?)
+        .ok()
+        .filter(|count| *count <= 4096)?;
+    (0..count)
+        .map(|_| {
+            let values = fields
+                .iter()
+                .map(|(name, ty)| Some((name.as_str(), cursor.value(assembly, ty)?)))
+                .collect::<Option<HashMap<_, _>>>()?;
+            let id = values
+                .get("id")?
+                .as_str()
+                .filter(|id| !id.is_empty())?
+                .to_owned();
+            let chance = values
+                .get("chance")?
+                .as_f64()
+                .filter(|chance| chance.is_finite() && (0.0..=1.0).contains(chance))?
+                as f32;
+            let condition_min = values.get("conditionMin")?.as_f64()? as f32;
+            let condition_max = values.get("conditionMax")?.as_f64()? as f32;
+            (condition_min.is_finite() && condition_max.is_finite()).then_some(
+                super::drops::ItemDrop {
+                    id,
+                    chance,
+                    condition_min,
+                    condition_max,
+                },
+            )
+        })
+        .collect()
+}
+
+fn normalize_drop_source_name(name: &str) -> String {
+    name.rsplit_once(" (")
+        .filter(|(_, suffix)| {
+            suffix
+                .strip_suffix(')')
+                .is_some_and(|number| number.parse::<u32>().is_ok())
+        })
+        .map_or_else(|| name.to_owned(), |(name, _)| name.to_owned())
 }
 
 pub(super) fn containers(
@@ -717,6 +1012,11 @@ impl<'a> Cursor<'a> {
                 json!(value)
             }
             TypeSignature::I4 => json!(self.i32()?),
+            TypeSignature::U2 => {
+                let value = self.u16()?;
+                self.align()?;
+                json!(value)
+            }
             TypeSignature::R4 => json!(f32::from_bits(self.i32()? as u32)),
             TypeSignature::String => json!(self.string()?),
             TypeSignature::SzArray(array) => {
@@ -763,7 +1063,7 @@ impl<'a> Cursor<'a> {
                 }
                 let name = definition.as_ref().map(|ty| ty.name.as_str()).unwrap_or("");
                 match name {
-                    "Vector2" => {
+                    "Vector2" | "Vector2Int" => {
                         self.skip(8)?;
                         serde_json::Value::Null
                     }
@@ -1110,6 +1410,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn item_sprite_paths_exclude_moodles_and_note_drawings() {
+        assert!(is_moodle_sprite(Some("Moodles/pain")));
+        assert!(!is_moodle_sprite(Some("sprites/moodles/pain")));
+        assert!(!is_item_sprite_source(Some("moodles/autopump")));
+        assert!(!is_item_sprite_source(Some(
+            "sprites/notedrawings/bloodbag"
+        )));
+        assert!(!is_item_sprite_source(Some("sprites/drawings/rope")));
+        assert!(is_item_sprite_source(Some("sprites/bloodbag")));
+        assert!(is_item_sprite_source(None));
+    }
+
+    #[test]
     fn registered_item_catalogue_is_backed_by_resource_prefabs() {
         let Some(game_dir) = std::env::var_os("CU_GAME_DIR") else {
             eprintln!("skipped: CU_GAME_DIR is not set");
@@ -1136,6 +1449,69 @@ mod tests {
                 .map(String::as_str)
                 .collect::<Vec<_>>(),
             ["reinforcedrope"]
+        );
+    }
+
+    #[test]
+    fn wiki_item_icons_skip_moodle_and_note_drawing_collisions() {
+        let Some(game_dir) = std::env::var_os("CU_GAME_DIR") else {
+            eprintln!("skipped: CU_GAME_DIR is not set");
+            return;
+        };
+        let data_dir = Path::new(&game_dir).join("CasualtiesUnknown_Data");
+        let studio = Studio::open(&data_dir).unwrap();
+        let (icons, error) = crafting_icons(
+            &data_dir,
+            &[],
+            ["bloodbag".to_owned(), "autopump".to_owned()],
+        );
+        assert!(error.is_none(), "icon decode errors: {error:?}");
+        assert!(icons.contains_key("moodle:pain"));
+        assert!(icons.contains_key("moodle:autopump"));
+        assert!(icons.contains_key("moodle:hot"));
+        assert!(icons.contains_key("moodle:cold"));
+        assert!(icons.contains_key("moodle:irradiated"));
+
+        let drawing = studio
+            .objects()
+            .find(|object| {
+                object.class_id() == 213
+                    && object.name() == Some("bloodbag")
+                    && object.container().is_some_and(|path| {
+                        path.eq_ignore_ascii_case("sprites/notedrawings/bloodbag")
+                    })
+            })
+            .expect("bloodbag note drawing")
+            .decode_sprite(Default::default(), Default::default())
+            .unwrap();
+        let icon = &icons["bloodbag"];
+        assert_ne!(icon.rgba, drawing.pixels);
+    }
+
+    #[test]
+    fn building_entity_drop_sources_include_explicit_drops() {
+        let Some(game_dir) = std::env::var_os("CU_GAME_DIR") else {
+            eprintln!("skipped: CU_GAME_DIR is not set");
+            return;
+        };
+        let assembly = CilObject::from_path_with_validation(
+            Path::new(&game_dir)
+                .join("CasualtiesUnknown_Data")
+                .join("Managed")
+                .join("Assembly-CSharp.dll"),
+            dotscope::ValidationConfig::minimal(),
+        )
+        .unwrap();
+        let data_dir = Path::new(&game_dir).join("CasualtiesUnknown_Data");
+        let sources = drop_sources(&data_dir, &assembly).unwrap();
+        assert!(sources.iter().any(|source| {
+            source.name == "medcrate"
+                && (!source.drops.is_empty() || !source.always_drops.is_empty())
+        }));
+        assert!(
+            sources
+                .iter()
+                .any(|source| !source.item_categories.is_empty())
         );
     }
 

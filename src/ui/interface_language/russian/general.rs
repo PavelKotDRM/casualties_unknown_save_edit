@@ -160,9 +160,8 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Delete crash reports" => Some("Удалить отчёты о сбоях"),
         "The editor crashed" => Some("Редактор аварийно завершился"),
         "Unsupported game version" => Some("Неподдерживаемая версия игры"),
-        "Item stats could not be read from the game" => {
-            Some("Не удалось прочитать характеристики предметов из игры")
-        }
+        "Game data could not be read from the game" => Some("Не удалось прочитать данные игры"),
+        "Could not sync game data" => Some("Не удалось синхронизировать данные игры"),
         "The game's preferences could not be read" => Some("Не удалось прочитать настройки игры"),
         "The game's preferences could not be changed" => Some("Не удалось изменить настройки игры"),
         "Steam achievement data was not read" => Some("Данные о достижениях Steam не прочитаны"),

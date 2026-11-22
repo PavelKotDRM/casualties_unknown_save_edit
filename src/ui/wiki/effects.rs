@@ -88,6 +88,7 @@ pub(super) fn item_effects(entry: &mut Entry, sources: &Sources, id: &str) {
                 Tone::Neutral,
             ));
             let dose = sources.effects.contents_effects(id, ml, inject);
+            add_effect_icons(entry, names, dose.iter());
             lines.extend(
                 dose.iter()
                     .filter(|e| !e.conditional)
@@ -119,6 +120,7 @@ pub(super) fn item_use_lists(
     mut lines: Vec<(String, Tone)>,
     effects: &[Effect],
 ) {
+    add_effect_icons(entry, names, effects.iter());
     lines.extend(
         effects
             .iter()
@@ -139,6 +141,36 @@ pub(super) fn item_use_lists(
             .push((names.text("Possible effects").into_owned(), sometimes));
     }
 }
+
+fn add_effect_icons<'a>(
+    entry: &mut Entry,
+    names: Names<'_>,
+    effects: impl IntoIterator<Item = &'a Effect>,
+) {
+    for effect in effects {
+        let line = effect_line(names, effect).0;
+        let icon_id = match effect.stat.to_ascii_lowercase().as_str() {
+            "radiationsickness" | "irradiated" => "moodle:irradiated".to_owned(),
+            "temperature" => match temperature_direction(effect.change) {
+                Some(true) => "moodle:hot".to_owned(),
+                Some(false) => "moodle:cold".to_owned(),
+                None => super::moodle_icon_id(&effect.stat),
+            },
+            _ => super::moodle_icon_id(&effect.stat),
+        };
+        entry.line_icon_ids.insert(line, icon_id);
+    }
+}
+
+fn temperature_direction(change: Change) -> Option<bool> {
+    match change {
+        Change::Add(value) if value != 0.0 => Some(value > 0.0),
+        Change::Multiply(value) if value != 1.0 => Some(value > 1.0),
+        Change::Set(value) if value != 37.0 => Some(value > 37.0),
+        _ => None,
+    }
+}
+
 pub(super) fn liquid_name(names: Names, effects: &GameEffects, id: &str) -> String {
     let key = effects
         .liquids

@@ -148,6 +148,12 @@ mod tests {
             "Weapons & ammo",
             "Includes the game's default liquids, batteries and component state. Edit contents after adding.",
             "Level {level}: {min} XP, level {next}: {max} XP",
+            "Matching crafting quality: {quality} ≥{amount}",
+            "Matching liquid crafting quality: {quality} ≥{amount}",
+            "Container crate",
+            "Outer torso",
+            "Blood crystal",
+            "Back (wear slot)",
         ] {
             assert_eq!(
                 pack.translations.get(source).map(String::as_str),

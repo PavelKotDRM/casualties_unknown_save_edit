@@ -13,13 +13,16 @@ impl EditorApp {
         ui::wiki::show(
             ctx,
             &mut self.wiki,
-            Names {
-                locale: self.locale.as_ref(),
-                interface_language: language,
+            ui::wiki::WikiData {
+                names,
+                item_stats: &self.item_stats,
+                effects: &self.item_effects,
+                crafting: &self.crafting,
+                crafting_icons: Some(&self.crafting_icons),
+                crafting_icons_error: self.crafting_icons_error.as_deref(),
+                drop_sources: &self.drop_sources,
+                unlocks: &self.progress,
             },
-            &self.item_stats,
-            &self.item_effects,
-            &self.progress,
             &mut ui::spoilers::SpoilerUi::new(
                 names,
                 &mut self.config.spoilers,

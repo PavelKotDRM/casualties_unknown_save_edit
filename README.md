@@ -95,9 +95,14 @@ only when the document has unsaved changes.
 - **Game wiki** (*Help → Game wiki*, F1). A searchable reference built from the
   installed game's metadata and language files: characters, endings, skills
   and the XP table, body and limb stats with healthy ranges, status effects,
-  world settings, presets, layers, items and liquids. Works without an open
-  save. Item and medicine entries list value, spoilage, crafting qualities,
-  contents and the effects of use (per use or per whole item, timed effects,
+  world settings, presets, layers, items, liquids, and recipes with crafting
+  rules. Recipe cards include bounded graphical crafting trees, and item cards
+  show game sprites, explicit drop chances and their sources where available.
+  Random category-pool drops are identified separately because they do not
+  have a fixed per-item chance. Status colours are enhanced for readability.
+  Works without an open save. Item and medicine entries list value, spoilage,
+  crafting qualities, contents and the effects of use (per use or per whole
+  item, timed effects,
   possible random or overdose effects), read from the game's code. Search
   matches every word, ranks title matches first and highlights hits (Ctrl+F,
   Esc to clear). Articles and search results are cached; only visible cards
@@ -365,9 +370,9 @@ overwrite an existing file. Change `code` and `name`, then translate the English
 values under `translations`, leaving keys and placeholders unchanged.
 
 The template is generated from the application source at build time, including
-menus, tooltips, editor parameter labels and built-in fallback stat labels.
-Game-provided item names, descriptions and settings are still translated by the
-game's language files; they are not exported.
+menus, tooltips, editor parameter labels, built-in fallback stat labels, and
+readable drop-source and wear-slot names. Game-provided item names, descriptions
+and settings still come from the game's language files; they are not exported.
 The exported [`examples/interface-language-template.json`](examples/interface-language-template.json)
 contains the current English keys and values, including readable health labels.
 
@@ -385,7 +390,7 @@ the status bar.
 | `src/json.rs` | JSON path and number helpers. |
 | `src/schema.rs`, `src/schema/` | Field metadata, characters, layers, endings, world settings and presets. |
 | `src/catalog.rs` | Runtime item and liquid catalogue from the selected installation. |
-| `src/game_data.rs`, `src/game_data/` | Item stats from the game's assemblies and Unity assets; item and liquid effects from the game's code. |
+| `src/game_data.rs`, `src/game_data/` | Item stats, crafting recipes, drop sources and sprites from game assemblies and Unity assets; item and liquid effects from the game's code. |
 | `src/model.rs`, `src/model/` | Healing, skill levels, weights, shared placement validation and container balancing. |
 | `src/locale.rs` | Game installation discovery and language files. |
 | `src/game_info.rs` | Installed game, Unity and Steam versions; supported game version. |

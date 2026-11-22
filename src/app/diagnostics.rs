@@ -20,7 +20,7 @@ impl EditorApp {
         match (&self.config.game_dir, &self.game_info) {
             (None, _) => add(
                 "Game folder not found",
-                "Names and item stats are not available; set the folder in Game data → Set game folder…".into(),
+                "Names, item stats, and recipes are not available; set the folder in Game data → Set game folder…".into(),
             ),
             (Some(_), Some(game)) => {
                 if let crate::game_info::Compatibility::Different(version) = game.compatibility() {
@@ -36,7 +36,7 @@ impl EditorApp {
             _ => {}
         }
         if let Some(error) = &self.item_sync_error {
-            add("Item stats could not be read from the game", error.clone());
+            add("Game data could not be read from the game", error.clone());
         }
         if let Some(error) = &self.progress.error {
             add("The game's preferences could not be read", error.clone());
@@ -105,8 +105,12 @@ impl EditorApp {
             (None, _) => game.push("- Folder: not found".into()),
         }
         game.push(match &self.item_sync_error {
-            Some(error) => format!("- Item stats: failed: {error}"),
-            None => format!("- Item stats: {} items", self.item_stats.len()),
+            Some(error) => format!("- Game data: failed: {error}"),
+            None => format!(
+                "- Game data: {} items, {} recipes",
+                self.item_stats.len(),
+                self.crafting.len()
+            ),
         });
         game.push(format!(
             "- Language files: {}",

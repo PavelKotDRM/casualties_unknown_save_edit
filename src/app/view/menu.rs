@@ -291,7 +291,7 @@ impl EditorApp {
                                         language.text("Game data loaded").to_string(),
                                         Level::Success,
                                     ),
-                                    Err(error) => self.error("Could not sync item stats", error),
+                                    Err(error) => self.error("Could not sync game data", error),
                                 }
                             } else {
                                 self.set_status(
@@ -349,7 +349,7 @@ impl EditorApp {
                                 },
                                 if found { Level::Success } else { Level::Error },
                             ),
-                            Err(error) => self.error("Could not sync item stats", error),
+                            Err(error) => self.error("Could not sync game data", error),
                         }
                         ui.close();
                     }

@@ -121,6 +121,16 @@ impl<'a> Reader<'a> {
             let previous = |back: usize| index.checked_sub(back).and_then(|i| instructions.get(i));
             match (instruction.mnemonic, &instruction.operand) {
                 ("ldftn", Operand::Token(token)) => pending_lambda = Some(*token),
+                ("call", Operand::Token(token)) => {
+                    if let (Some(def), Some(previous), Some(callee)) =
+                        (list.last_mut(), previous(1), self.callee(*token))
+                        && callee.owner == "CraftingQuality"
+                        && callee.name == "op_Implicit"
+                        && let Some(StaticValue::String(id)) = instruction_value(previous, strings)
+                    {
+                        def.qualities.push((id, 1.0));
+                    }
+                }
                 ("newobj", Operand::Token(token)) => {
                     let Some(callee) = self.callee(*token) else {
                         continue;
@@ -154,8 +164,8 @@ impl<'a> Reader<'a> {
                     };
                     match callee.owner.as_str() {
                         "CraftingQuality" => {
-                            if let (Some(id), Some(level)) = (text(0), number(1)) {
-                                def.qualities.push((id, level));
+                            if let Some(id) = text(0) {
+                                def.qualities.push((id, number(1).unwrap_or(1.0)));
                             }
                         }
                         "LiquidStack" => {

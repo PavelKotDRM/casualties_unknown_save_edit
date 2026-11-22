@@ -173,6 +173,10 @@ pub struct EditorApp {
     locale: Option<Locale>,
     item_stats: HashMap<String, ItemStats>,
     item_effects: game_data::GameEffects,
+    crafting: Vec<game_data::crafting::CraftingRecipe>,
+    crafting_icons: HashMap<String, game_data::crafting::CraftingIcon>,
+    crafting_icons_error: Option<String>,
+    drop_sources: Vec<game_data::drops::DropSource>,
     game_info: Option<GameInfo>,
     limbs: ui::limbs::LimbsState,
     inventory: ui::inventory::InventoryState,
@@ -227,6 +231,10 @@ impl EditorApp {
             locale: None,
             item_stats: HashMap::new(),
             item_effects: Default::default(),
+            crafting: Vec::new(),
+            crafting_icons: HashMap::new(),
+            crafting_icons_error: None,
+            drop_sources: Vec::new(),
             game_info: None,
             limbs: Default::default(),
             inventory: Default::default(),
@@ -326,13 +334,13 @@ impl EditorApp {
                             ),
                             Level::Info,
                         ),
-                        Err(error) => self.error("Could not sync item stats", error),
+                        Err(error) => self.error("Could not sync game data", error),
                     }
                 } else if let Some(dir) =
                     locale::detect_game_dir(save::default_save_dir().as_deref())
                     && let Err(error) = self.set_game_dir(Some(dir))
                 {
-                    self.error("Could not sync item stats", error);
+                    self.error("Could not sync game data", error);
                 }
             }
         }
@@ -445,7 +453,7 @@ impl EditorApp {
             .filter(|d| locale::is_game_dir(d))
             .or_else(|| locale::detect_game_dir(save::default_save_dir().as_deref()));
         if let Err(error) = self.set_game_dir(dir) {
-            self.error("Could not sync item stats", error);
+            self.error("Could not sync game data", error);
         }
     }
 
@@ -466,6 +474,10 @@ impl EditorApp {
         }
         self.item_stats = data.items;
         self.item_effects = data.effects;
+        self.crafting = data.crafting;
+        self.crafting_icons = data.crafting_icons;
+        self.crafting_icons_error = data.crafting_icons_error;
+        self.drop_sources = data.drop_sources;
         self.game_info = dir.as_deref().map(GameInfo::read);
         self.config.game_dir = dir;
         let wanted = self.config.language.clone().unwrap_or_else(|| "EN".into());

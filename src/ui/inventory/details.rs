@@ -220,11 +220,15 @@ fn header(ui: &mut Ui, names: Names, id: &str, def: Option<&catalog::ItemDef>) {
             names.text("Category:"),
             names.text(catalog::group(d.group).label),
             names.text("Game category:"),
-            d.category,
+            names.stat(d.category),
             if d.wear_slot.is_empty() {
                 String::new()
             } else {
-                format!(" · {} ({})", names.text("wearable"), d.wear_slot)
+                format!(
+                    " · {} ({})",
+                    names.text("wearable"),
+                    names.wear_slot(d.wear_slot)
+                )
             },
             if d.capacity > 0.0 {
                 format!(" · holds {} ml", fmt_num(d.capacity as f64))
@@ -424,8 +428,14 @@ fn warnings(
             colors::WARN,
             names
                 .text("⚠ This item belongs in wear slot {expected}; it is assigned to {actual}.")
-                .replace("{expected}", expected_wear_slot.unwrap_or("none"))
-                .replace("{actual}", w),
+                .replace(
+                    "{expected}",
+                    &expected_wear_slot.map_or_else(
+                        || names.text("None").into_owned(),
+                        |slot| names.wear_slot(slot),
+                    ),
+                )
+                .replace("{actual}", &names.wear_slot(w)),
         );
     }
     if let Location::Worn(w) = loc

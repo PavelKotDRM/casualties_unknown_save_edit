@@ -106,7 +106,7 @@ pub(super) fn add_window(
                                 names.text("Category:"),
                                 names.text(catalog::group(d.group).label),
                                 names.text("Game category:"),
-                                d.category
+                                names.stat(d.category)
                             ));
                         if r.clicked() {
                             state.add_id = d.id.to_owned();
@@ -473,6 +473,8 @@ mod tests {
         ItemStats {
             category: "medical".to_owned(),
             weight: 1.0,
+            trade_value: 0.0,
+            untradeable: false,
             scale_weight_with_condition: false,
             wearable: false,
             wear_slot: None,

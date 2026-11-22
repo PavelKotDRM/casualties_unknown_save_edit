@@ -41,6 +41,34 @@ fn russian_interface_translates_installed_health_and_limb_fields() {
             "Untranslated health fields: {missing:?}"
         );
     }
+
+    let names = cu_save_editor::ui::Names {
+        locale: None,
+        interface_language: cu_save_editor::ui::InterfaceLanguage::Russian,
+    };
+    for source in &game.drop_sources {
+        let label = names.game_identifier(&source.name);
+        assert!(
+            label
+                .chars()
+                .any(|c| ('А'..='я').contains(&c) || c == 'ё' || c == 'Ё'),
+            "Untranslated drop source {}: {label}",
+            source.name
+        );
+    }
+    for slot in game
+        .items
+        .values()
+        .filter_map(|item| item.wear_slot.as_deref())
+    {
+        let label = names.wear_slot(slot);
+        assert!(
+            label
+                .chars()
+                .any(|c| ('А'..='я').contains(&c) || c == 'ё' || c == 'Ё'),
+            "Untranslated wear slot {slot}: {label}"
+        );
+    }
 }
 
 #[test]
@@ -50,6 +78,30 @@ fn runtime_catalogues_and_rules_come_from_the_installed_game() {
         return;
     };
     let data = cu_save_editor::game_data::load_game_data(Path::new(&game_dir)).unwrap();
+    assert_eq!(data.crafting.len(), 137);
+    let rope_icon = data.crafting_icons.get("rope").unwrap();
+    assert!(rope_icon.width > 0 && rope_icon.height > 0);
+    assert_eq!(
+        rope_icon.rgba.len(),
+        rope_icon.width as usize * rope_icon.height as usize * 4
+    );
+    let item_icon = data.crafting_icons.get("scrapmetal").unwrap();
+    assert!(item_icon.width > 0 && item_icon.height > 0);
+    assert!(!data.drop_sources.is_empty());
+    assert!(data.drop_sources.iter().any(|source| {
+        source.name == "medcrate" && (!source.drops.is_empty() || !source.always_drops.is_empty())
+    }));
+    let rope = data
+        .crafting
+        .iter()
+        .find(|recipe| recipe.index == 0)
+        .unwrap();
+    assert_eq!(rope.result_id, "rope");
+    assert_eq!(rope.intelligence, 1);
+    assert_eq!(rope.ingredients.len(), 2);
+    assert_eq!(rope.ingredients[0].quality_id.as_deref(), Some("foliage"));
+    assert_eq!(rope.ingredients[0].minimum_condition, 0.0);
+    assert_eq!(rope.ingredients[0].ignored_id.as_deref(), Some("rope"));
     let metadata = &data.metadata;
     let protection = metadata.protection.as_ref().unwrap_or_else(|| {
         panic!(
@@ -581,6 +633,10 @@ fn item_and_container_metadata_is_loaded() {
         bag.container_encumbrance
             .is_some_and(|value| value.is_finite() && value >= 0.0)
     );
+    assert!(
+        stats.values().any(|item| item.trade_value > 0.0),
+        "no item trade values were loaded"
+    );
     let restricted_container = stats
         .values()
         .find(|item| {
@@ -632,6 +688,17 @@ fn item_and_liquid_effects_are_read_from_the_game_code() {
     };
     let data = cu_save_editor::game_data::load_game_data(Path::new(&game_dir)).unwrap();
     let effects = &data.effects;
+    assert!(effects.items.values().any(|item| {
+        item.qualities
+            .iter()
+            .any(|(id, amount)| id == "foliage" && *amount >= 1.0)
+    }));
+    assert!(effects.liquids.values().any(|liquid| {
+        liquid
+            .qualities
+            .iter()
+            .any(|(id, amount)| id == "disinfectant" && *amount >= 1.0)
+    }));
     let add = |list: &[Effect], target: &Target, stat: &str| {
         list.iter()
             .filter(|e| &e.target == target && e.stat == stat && !e.conditional)

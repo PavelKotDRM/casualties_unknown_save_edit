@@ -1,7 +1,7 @@
 //! Display-name lookup combining game locale data and interface translations.
 
 use super::InterfaceLanguage;
-use super::text::{prettify_id, strip_rich_text};
+use super::text::strip_rich_text;
 use crate::locale::Locale;
 use crate::schema;
 use std::borrow::Cow;
@@ -41,16 +41,43 @@ impl Names<'_> {
             .locale
             .and_then(|locale| locale.other(key).or_else(|| locale.moodle_name(stem)))
         {
-            return self.text(&strip_rich_text(text)).into_owned();
+            let text = strip_rich_text(text);
+            if !text.eq_ignore_ascii_case(key) {
+                return self.text(&text).into_owned();
+            }
         }
-        self.text(&humanize(stem)).into_owned()
+        self.fallback_identifier(stem)
     }
 
-    /// Item display name (falls back to the id).
+    /// Item display name, with a readable localized fallback.
     pub fn item(&self, id: &str) -> String {
         self.locale
             .and_then(|l| l.item_name(id))
-            .map_or_else(|| prettify_id(id), str::to_owned)
+            .filter(|name| !name.eq_ignore_ascii_case(id))
+            .map_or_else(|| self.fallback_identifier(id), str::to_owned)
+    }
+
+    /// Localized display name for a game or Unity object identifier.
+    pub fn game_identifier(&self, id: &str) -> String {
+        let name = self
+            .locale
+            .and_then(|locale| locale.item_name(id).or_else(|| locale.other(id)))
+            .map(strip_rich_text)
+            .filter(|name| !name.eq_ignore_ascii_case(id));
+        name.unwrap_or_else(|| self.fallback_identifier(id))
+    }
+
+    /// Wear-slot identifier (`items[].wearSlot`) as a localized label.
+    pub fn wear_slot(&self, id: &str) -> String {
+        if id.eq_ignore_ascii_case("back") {
+            self.locale
+                .and_then(|locale| locale.other(id))
+                .filter(|name| !name.eq_ignore_ascii_case(id))
+                .map(|name| self.text(&strip_rich_text(name)).into_owned())
+                .unwrap_or_else(|| self.text_with_fallback("Back (wear slot)", "Back"))
+        } else {
+            self.stat(id)
+        }
     }
 
     /// Item description, if available.
@@ -70,12 +97,18 @@ impl Names<'_> {
         let Some(def) = schema::LIMBS.get(index) else {
             return format!("Limb #{index}");
         };
-        let name = self
+        let localized = self
             .locale
             .and_then(|l| l.other(def.object))
-            .unwrap_or(def.name)
-            .to_owned();
-        self.text(&name).into_owned()
+            .map(strip_rich_text)
+            .filter(|name| !name.eq_ignore_ascii_case(def.object));
+        if let Some(name) = localized {
+            self.text(&name).into_owned()
+        } else if !def.name.eq_ignore_ascii_case(def.object) {
+            self.text(def.name).into_owned()
+        } else {
+            self.fallback_identifier(def.object)
+        }
     }
 
     /// Run setting label.
@@ -84,7 +117,7 @@ impl Names<'_> {
             .and_then(|l| l.other(&format!("runset{id}")))
             .map(str::to_owned)
             .or_else(|| schema::run_setting(id).map(|d| d.label.to_owned()))
-            .unwrap_or_else(|| id.to_owned())
+            .unwrap_or_else(|| self.fallback_identifier(id))
     }
 
     /// Run setting description.
@@ -262,6 +295,152 @@ impl Names<'_> {
             })
             .unwrap_or_else(|| self.text("Unknown layer").into_owned())
     }
+
+    fn fallback_identifier(&self, id: &str) -> String {
+        match identifier_label(id) {
+            Some(label) => self.text(label).into_owned(),
+            None => {
+                let label = humanize(id);
+                self.text(&label).into_owned()
+            }
+        }
+    }
+
+    fn text_with_fallback(&self, source: &'static str, fallback: &'static str) -> String {
+        let translated = self.text(source);
+        if translated == source {
+            fallback.to_owned()
+        } else {
+            translated.into_owned()
+        }
+    }
+}
+
+pub(crate) const GAME_ID_LABELS: &[(&str, &str)] = &[
+    ("animalcorpse", "Animal corpse"),
+    ("arms", "Arms"),
+    ("container", "Container"),
+    ("custom", "Custom"),
+    ("drug", "Drug"),
+    ("food", "Food"),
+    ("medical", "Medical"),
+    ("tool", "Tool"),
+    ("trash", "Trash"),
+    ("unobtainable", "Unobtainable"),
+    ("utility", "Utility"),
+    ("water", "Water"),
+    ("wearable", "Wearable"),
+    ("weapon", "Weapon"),
+    ("balaclava", "Balaclava"),
+    ("bananaplant", "Banana plant"),
+    ("bandolier", "Bandolier"),
+    ("barbedwirefence", "Barbed wire fence"),
+    ("beartrap", "Bear trap"),
+    ("belt", "Belt"),
+    ("bioterminal", "Bio terminal"),
+    ("blindfold", "Blindfold"),
+    ("bloodcrystal", "Blood crystal"),
+    ("bouncecap", "Bounce cap"),
+    ("brownshroom", "Brown shroom"),
+    ("cactus", "Cactus"),
+    ("cavetick", "Cave tick"),
+    ("ceilingrye", "Ceiling rye"),
+    ("ceilingturret", "Ceiling turret"),
+    ("ceilingturretslim", "Slim ceiling turret"),
+    ("coil", "Coil"),
+    ("coldpuff", "Cold puff"),
+    ("containercrate", "Container crate"),
+    ("corecrystal", "Core crystal"),
+    ("corpse", "Corpse"),
+    ("crimsonbush", "Crimson bush"),
+    ("crimsontree", "Crimson tree"),
+    ("crystalenemy", "Crystal enemy"),
+    ("digestioncrystal", "Digestion crystal"),
+    ("drillpod", "Drill pod"),
+    ("drillpodbroken", "Broken drill pod"),
+    ("dropcapsule", "Drop capsule"),
+    ("drybush", "Dry bush"),
+    ("emissivecrystal", "Emissive crystal"),
+    ("eyes", "Eyes"),
+    ("fan", "Fan"),
+    ("feet", "Feet"),
+    ("foodbox", "Food box"),
+    ("frigiant", "Frigiant"),
+    ("fungalibungali", "Fungalibungali"),
+    ("geotree", "Geo tree"),
+    ("glowplant", "Glow plant"),
+    ("glowshroom", "Glow shroom"),
+    ("grabberplant", "Grabber plant"),
+    ("grabbershroom", "Grabber shroom"),
+    ("grate", "Grate"),
+    ("gunmine", "Gun mine"),
+    ("hands", "Hands"),
+    ("hat", "Hat"),
+    ("heatfern", "Heat fern"),
+    ("hydreed", "Hydreed"),
+    ("jumppad", "Jump pad"),
+    ("ladder", "Ladder"),
+    ("landmine", "Land mine"),
+    ("laserdrone", "Laser drone"),
+    ("lavalamp", "Lava lamp"),
+    ("leadbush", "Lead bush"),
+    ("lifepodchest", "Life pod chest"),
+    ("lifepodlight", "Life pod light"),
+    ("lifepodpump", "Life pod pump"),
+    ("lifepodshower", "Life pod shower"),
+    ("knees", "Knees"),
+    ("medcrate", "Medical crate"),
+    ("mouth", "Mouth"),
+    ("mushlight", "Mushlight"),
+    ("mushroomplatform", "Mushroom platform"),
+    ("mushroomtree", "Mushroom tree"),
+    ("neck", "Neck"),
+    ("outertorso", "Outer torso"),
+    ("overgrowntick", "Overgrown tick"),
+    ("oxygencrystal", "Oxygen crystal"),
+    ("piston", "Piston"),
+    ("pistonleft", "Left piston"),
+    ("pistonright", "Right piston"),
+    ("pop", "Pop"),
+    ("pussack", "Pussack"),
+    ("radbarrel", "Radiation barrel"),
+    ("reliefcrystal", "Relief crystal"),
+    ("sandrose", "Sand rose"),
+    ("sawblade", "Saw blade"),
+    ("scrapeater", "Scrapeater"),
+    ("shadecrawler", "Shade crawler"),
+    ("sidestabber", "Side stabber"),
+    ("sidestabberflip", "Flipped side stabber"),
+    ("skullcrusher", "Skull crusher"),
+    ("snowstrider", "Snow strider"),
+    ("soothingcrystal", "Soothing crystal"),
+    ("soundcannon", "Sound cannon"),
+    ("spaceheater", "Space heater"),
+    ("spicevine", "Spice vine"),
+    ("spicevineceiling", "Ceiling spice vine"),
+    ("spikestabber", "Spike stabber"),
+    ("stoneplant", "Stone plant"),
+    ("thigh", "Thigh"),
+    ("thighback", "Back of thigh"),
+    ("techball", "Tech ball"),
+    ("thornbackelder", "Elder thornback"),
+    ("thornbackyoung", "Young thornback"),
+    ("torso", "Torso"),
+    ("torsofront", "Front of torso"),
+    ("trader1", "Trader 1"),
+    ("trader2", "Trader 2"),
+    ("trader3", "Trader 3"),
+    ("turbulentcrystal", "Turbulent crystal"),
+    ("turret", "Turret"),
+    ("wallbiter", "Wall biter"),
+    ("wraps", "Wraps"),
+];
+
+fn identifier_label(id: &str) -> Option<&'static str> {
+    GAME_ID_LABELS
+        .iter()
+        .find(|(identifier, _)| id.eq_ignore_ascii_case(identifier))
+        .map(|(_, label)| *label)
 }
 
 fn humanize(key: &str) -> String {
@@ -269,6 +448,8 @@ fn humanize(key: &str) -> String {
     for (i, c) in key.chars().enumerate() {
         if i == 0 {
             out.extend(c.to_uppercase());
+        } else if matches!(c, '_' | '-') {
+            out.push(' ');
         } else if c.is_uppercase() {
             out.push(' ');
             out.extend(c.to_lowercase());
@@ -346,5 +527,54 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn game_identifiers_and_wear_slots_use_readable_localized_labels() {
+        let names = Names {
+            locale: None,
+            interface_language: InterfaceLanguage::Russian,
+        };
+        assert_eq!(names.item("Containercrate"), "Ящик-контейнер");
+        assert_eq!(names.game_identifier("BloodCrystal"), "Кровавый кристалл");
+        assert_eq!(names.stat("outertorso"), "Наружный торс");
+        assert_eq!(names.wear_slot("back"), "Спина");
+
+        let locale = Locale::from_json(r#"{"main":{"containercrate":"Container crate"}}"#).unwrap();
+        assert_eq!(
+            Names {
+                locale: Some(&locale),
+                interface_language: InterfaceLanguage::English,
+            }
+            .item("Containercrate"),
+            "Container crate"
+        );
+    }
+
+    #[test]
+    fn game_identifier_labels_are_translated_and_exported() {
+        let names = Names {
+            locale: None,
+            interface_language: InterfaceLanguage::Russian,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let template_path = directory.path().join("interface-language.json");
+        crate::interface_packs::export_template(&template_path).unwrap();
+        let template: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(template_path).unwrap()).unwrap();
+
+        for (_, label) in GAME_ID_LABELS {
+            assert_ne!(
+                names.text(label),
+                *label,
+                "missing Russian translation: {label}"
+            );
+            assert_eq!(
+                template["translations"][*label], *label,
+                "missing template entry: {label}"
+            );
+        }
+        assert_eq!(names.wear_slot("back"), "Спина");
+        assert!(template["translations"]["Back (wear slot)"].is_string());
     }
 }

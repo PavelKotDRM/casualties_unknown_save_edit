@@ -3,8 +3,8 @@
 //! The game ships its translations as JSON files in
 //! `<game>/CasualtiesUnknown_Data/Lang/*.json`. When the installation can be
 //! found, the editor shows proper item, limb and run-setting names (in any
-//! language the game supports). Without it the editor falls back to the raw
-//! identifiers and built-in English labels.
+//! language the game supports). Without it the editor falls back to readable
+//! identifier labels and built-in English labels.
 //!
 //! The installation is located by, in order:
 //! 1. the `Mono path` line of the game's `Player.log` next to the save,
@@ -71,17 +71,17 @@ impl Locale {
 
     /// Display name of an item (`None` if unknown or empty).
     pub fn item_name(&self, id: &str) -> Option<&str> {
-        non_empty(self.main.get(id))
+        lookup(&self.main, id)
     }
 
     /// Description of an item.
     pub fn item_description(&self, id: &str) -> Option<&str> {
-        non_empty(self.main.get(&format!("{id}dsc")))
+        lookup(&self.main, &format!("{id}dsc"))
     }
 
     /// Entry of the `other` table.
     pub fn other(&self, key: &str) -> Option<&str> {
-        non_empty(self.other.get(key))
+        lookup(&self.other, key)
     }
 
     pub fn moodle_name(&self, id: &str) -> Option<&str> {
@@ -116,6 +116,16 @@ impl Locale {
 
 fn non_empty(s: Option<&String>) -> Option<&str> {
     s.map(String::as_str).filter(|s| !s.trim().is_empty())
+}
+
+fn lookup<'a>(table: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
+    let value = table.get(key).or_else(|| {
+        table
+            .iter()
+            .find(|(candidate, _)| candidate.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value)
+    })?;
+    non_empty(Some(value))
 }
 
 /// A language file found in the game installation.
@@ -193,6 +203,19 @@ mod tests {
         assert_eq!(l.item_name("bandage"), Some("Dressing"));
         assert_eq!(l.item_description("bandage"), None);
         assert_eq!(l.other("Head"), Some("Head"));
+    }
+
+    #[test]
+    fn game_name_lookups_match_key_case_and_prefer_exact_keys() {
+        let l = Locale::from_json(
+            r#"{"main":{"containercrate":"Container crate","Containercrate":"Exact name","bandagedsc":"A dressing"},"other":{"OuterTorso":"Outer torso","torso":"Exact torso","TORSO":"Other torso"}}"#,
+        )
+        .unwrap();
+        assert_eq!(l.item_name("containercrate"), Some("Container crate"));
+        assert_eq!(l.item_name("Containercrate"), Some("Exact name"));
+        assert_eq!(l.item_description("BANDAGE"), Some("A dressing"));
+        assert_eq!(l.other("outertorso"), Some("Outer torso"));
+        assert_eq!(l.other("torso"), Some("Exact torso"));
     }
 
     #[test]

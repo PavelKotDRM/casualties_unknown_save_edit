@@ -187,6 +187,8 @@ pub(super) fn items(assembly: &CilObject) -> Result<HashMap<String, ItemStats>, 
                 ItemStats {
                     category,
                     weight,
+                    trade_value: number(&fields, "value").unwrap_or_default(),
+                    untradeable: flag(&fields, "untradeable"),
                     wearable,
                     wear_slot,
                     liquid_capacity,

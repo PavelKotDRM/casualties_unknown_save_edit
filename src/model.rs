@@ -122,6 +122,8 @@ mod tests {
         ItemStats {
             category: "container".to_owned(),
             weight,
+            trade_value: 0.0,
+            untradeable: false,
             scale_weight_with_condition: false,
             wearable: false,
             wear_slot: None,

@@ -7,6 +7,8 @@ use std::path::Path;
 
 pub mod ammunition;
 mod assets;
+pub mod crafting;
+pub mod drops;
 pub mod effects;
 mod il;
 pub mod metadata;
@@ -14,6 +16,7 @@ pub mod moodles;
 pub mod program;
 pub mod protection;
 pub mod runtime;
+pub mod traders;
 
 pub use effects::{
     Change, ContentsUse, Effect, GameEffects, ItemProfile, ItemUse, LiquidProfile, Target,
@@ -28,6 +31,8 @@ use il::{
 pub struct ItemStats {
     pub category: String,
     pub weight: f32,
+    pub trade_value: f32,
+    pub untradeable: bool,
     pub scale_weight_with_condition: bool,
     pub wearable: bool,
     pub wear_slot: Option<String>,
@@ -72,6 +77,10 @@ impl ItemStats {
 pub struct GameData {
     pub items: HashMap<String, ItemStats>,
     pub effects: GameEffects,
+    pub crafting: Vec<crafting::CraftingRecipe>,
+    pub crafting_icons: HashMap<String, crafting::CraftingIcon>,
+    pub crafting_icons_error: Option<String>,
+    pub drop_sources: Vec<drops::DropSource>,
     pub metadata: metadata::Metadata,
 }
 
@@ -88,7 +97,15 @@ pub fn load_game_data(game_dir: &Path) -> Result<GameData, String> {
         CilObject::from_path_with_validation(&assembly_path, ValidationConfig::minimal())
             .map_err(|error| format!("Cannot parse {}: {error}", assembly_path.display()))?;
     let effects = effects::parse(&assembly);
+    let crafting = crafting::parse(&assembly)?;
     let mut items = il::items(&assembly)?;
+    let item_ids = items
+        .keys()
+        .cloned()
+        .chain(crate::catalog::ITEMS.iter().map(|item| item.id.to_owned()));
+    let (crafting_icons, crafting_icons_error) =
+        assets::crafting_icons(&data_dir, &crafting, item_ids);
+    let drop_sources = assets::drop_sources(&data_dir, &assembly)?;
     assets::containers(&data_dir, &assembly, &mut items)?;
     let locale = crate::locale::Locale::load(&data_dir.join("Lang").join("EN.json"));
     let mut metadata = metadata::parse(
@@ -184,6 +201,10 @@ pub fn load_game_data(game_dir: &Path) -> Result<GameData, String> {
     Ok(GameData {
         items,
         effects,
+        crafting,
+        crafting_icons,
+        crafting_icons_error,
+        drop_sources,
         metadata,
     })
 }
@@ -251,6 +272,8 @@ mod tests {
         ItemStats {
             category: "tool".into(),
             weight: 2.0,
+            trade_value: 0.0,
+            untradeable: false,
             scale_weight_with_condition: scaled,
             wearable: false,
             wear_slot: None,
