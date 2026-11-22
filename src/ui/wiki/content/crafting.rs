@@ -240,40 +240,6 @@ fn recipe_node(
                     ));
                 }
             }
-        } else if let Some(quality_id) = ingredient.quality_id.as_deref() {
-            let candidates = quality_candidates(
-                names,
-                game_effects,
-                quality_id,
-                ingredient.quality_amount,
-                ingredient.is_liquid,
-                ingredient.ignored_id.as_deref(),
-            );
-            const MAX_EXAMPLES: usize = 4;
-            for (id, name) in candidates.iter().take(MAX_EXAMPLES) {
-                input.children.push(TreeNode::new(
-                    if ingredient.is_liquid {
-                        TreeNodeKind::Liquid
-                    } else {
-                        TreeNodeKind::Item
-                    },
-                    name,
-                    Some(names.text("Examples").into_owned()),
-                    (!ingredient.is_liquid).then(|| id.clone()),
-                ));
-            }
-            if candidates.len() > MAX_EXAMPLES {
-                input.children.push(TreeNode::new(
-                    TreeNodeKind::Quality,
-                    format!(
-                        "+{} {}",
-                        candidates.len() - MAX_EXAMPLES,
-                        names.text("more")
-                    ),
-                    None,
-                    None,
-                ));
-            }
         }
         node.children.push(input);
     }
@@ -408,45 +374,6 @@ fn result_detail(names: Names<'_>, recipe: &CraftingRecipe) -> String {
         },
         quantity
     )
-}
-
-fn quality_candidates(
-    names: Names<'_>,
-    game_effects: &GameEffects,
-    quality_id: &str,
-    amount: f32,
-    is_liquid: bool,
-    ignored_id: Option<&str>,
-) -> Vec<(String, String)> {
-    let mut candidates: Vec<_> = if is_liquid {
-        game_effects
-            .liquids
-            .iter()
-            .filter(|(liquid_id, liquid)| {
-                liquid
-                    .qualities
-                    .iter()
-                    .any(|(id, quality)| id == quality_id && *quality >= amount)
-                    && ignored_id.is_none_or(|ignored| liquid_id.as_str() != ignored)
-            })
-            .map(|(id, _)| (id.clone(), effects::liquid_name(names, game_effects, id)))
-            .collect()
-    } else {
-        game_effects
-            .items
-            .iter()
-            .filter(|(id, item)| {
-                item.qualities
-                    .iter()
-                    .any(|(id, quality)| id == quality_id && *quality >= amount)
-                    && ignored_id.is_none_or(|ignored| id.as_str() != ignored)
-            })
-            .map(|(id, _)| (id.clone(), names.item(id)))
-            .collect()
-    };
-    candidates.sort_by(|left, right| left.1.cmp(&right.1).then(left.0.cmp(&right.0)));
-    candidates.dedup_by(|left, right| left.0 == right.0);
-    candidates
 }
 
 fn category_label(category: RecipeCategory) -> &'static str {
@@ -607,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn crafting_tree_expands_producers_and_quality_alternatives_without_cycles() {
+    fn crafting_tree_expands_producers_but_not_quality_candidates_or_cycles() {
         let producer = recipe(0, "fiber", vec![specific("leaf")]);
         let root = recipe(1, "rope", vec![specific("fiber")]);
         let mut game_effects = GameEffects::default();
@@ -651,8 +578,8 @@ mod tests {
         );
         let quality_node = &quality_tree.root.children[0].children[0];
         assert_eq!(quality_node.kind, TreeNodeKind::Quality);
-        assert_eq!(quality_node.children[0].title, "Leaf");
-        assert_eq!(quality_node.children[0].icon_id.as_deref(), Some("leaf"));
+        assert!(quality_node.children.is_empty());
+        assert!(quality_node.quality_filter.is_some());
 
         let cycle = recipe(3, "rope", vec![specific("rope")]);
         let cycle_tree =

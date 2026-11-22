@@ -13,6 +13,7 @@ pub struct MoodleData {
     pub neutral_colour: Option<[u8; 3]>,
     pub colours: BTreeMap<String, [u8; 3]>,
     pub directions: BTreeMap<String, Good>,
+    pub field_moodles: BTreeMap<String, Vec<String>>,
 }
 
 fn polarity([red, green, blue]: [u8; 3]) -> Option<bool> {
@@ -80,47 +81,47 @@ pub(super) fn parse(assembly: &CilObject, palette: &[[u8; 3]]) -> Result<MoodleD
                 Some((key, colour, at.saturating_sub(2)))
             });
             if let Some((key, colour, arguments)) = definition {
-                result.colours.insert(key, colour);
+                result.colours.insert(key.clone(), colour);
                 let positive = polarity(colour);
                 let [red, green, blue] = colour;
-                if positive.is_some() || red != green || green != blue {
-                    let mut guarded_field = None;
-                    for at in (start + 2..arguments).rev() {
-                        let guard = code[at];
-                        if !guard
-                            .branch_targets
-                            .iter()
-                            .any(|target| *target > instruction.rva)
+                let track_direction = positive.is_some() || red != green || green != blue;
+                let mut guarded_field = None;
+                for at in (start + 2..arguments).rev() {
+                    let guard = code[at];
+                    if !guard
+                        .branch_targets
+                        .iter()
+                        .any(|target| *target > instruction.rva)
+                    {
+                        continue;
+                    }
+                    let rising = if guard.mnemonic.starts_with("ble")
+                        || guard.mnemonic.starts_with("blt")
+                    {
+                        true
+                    } else if guard.mnemonic.starts_with("bge") || guard.mnemonic.starts_with("bgt")
+                    {
+                        false
+                    } else {
+                        continue;
+                    };
+                    if !code[at - 1].mnemonic.starts_with("ldc.")
+                        || code[at - 2].mnemonic != "ldfld"
+                    {
+                        continue;
+                    }
+                    if let Some((owner, field)) = reader.field(&code[at - 2].operand)
+                        && matches!(owner.as_str(), "Body" | "Limb")
+                    {
+                        let field_key = format!("{owner}.{field}");
+                        if guarded_field
+                            .as_ref()
+                            .is_some_and(|previous| previous != &field_key)
                         {
                             continue;
                         }
-                        let rising = if guard.mnemonic.starts_with("ble")
-                            || guard.mnemonic.starts_with("blt")
-                        {
-                            true
-                        } else if guard.mnemonic.starts_with("bge")
-                            || guard.mnemonic.starts_with("bgt")
-                        {
-                            false
-                        } else {
-                            continue;
-                        };
-                        if !code[at - 1].mnemonic.starts_with("ldc.")
-                            || code[at - 2].mnemonic != "ldfld"
-                        {
-                            continue;
-                        }
-                        if let Some((owner, field)) = reader.field(&code[at - 2].operand)
-                            && matches!(owner.as_str(), "Body" | "Limb")
-                        {
-                            let key = format!("{owner}.{field}");
-                            if guarded_field
-                                .as_ref()
-                                .is_some_and(|previous| previous != &key)
-                            {
-                                continue;
-                            }
-                            guarded_field = Some(key.clone());
+                        guarded_field = Some(field_key.clone());
+                        if track_direction {
                             let direction = match positive {
                                 Some(positive) if positive == rising => Good::High,
                                 Some(_) => Good::Low,
@@ -128,7 +129,7 @@ pub(super) fn parse(assembly: &CilObject, palette: &[[u8; 3]]) -> Result<MoodleD
                             };
                             result
                                 .directions
-                                .entry(key)
+                                .entry(field_key)
                                 .and_modify(|previous| {
                                     if *previous != direction {
                                         *previous = Good::Neutral;
@@ -136,6 +137,12 @@ pub(super) fn parse(assembly: &CilObject, palette: &[[u8; 3]]) -> Result<MoodleD
                                 })
                                 .or_insert(direction);
                         }
+                    }
+                }
+                if let Some(field) = guarded_field {
+                    let moodles = result.field_moodles.entry(field).or_default();
+                    if !moodles.contains(&key) {
+                        moodles.push(key);
                     }
                 }
             }

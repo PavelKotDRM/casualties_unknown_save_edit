@@ -418,6 +418,12 @@ pub(super) fn liquids(sources: &Sources) -> Vec<Entry> {
             entry.subtitle = id.clone();
             if let Some(filter) = &sources.quality_filter {
                 entry.search_alias = Some(filter.text(names));
+                if let Some(volume) = filter.required_liquid_volume(effects, id) {
+                    entry.facts.push((
+                        names.text("Required volume").into_owned(),
+                        format!("{} ml", fmt_num(f64::from(volume))),
+                    ));
+                }
             }
             let key = liquid.locale_name.as_deref().unwrap_or(id);
             entry.text = names

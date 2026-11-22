@@ -149,16 +149,130 @@ fn add_effect_icons<'a>(
 ) {
     for effect in effects {
         let line = effect_line(names, effect).0;
-        let icon_id = match effect.stat.to_ascii_lowercase().as_str() {
-            "radiationsickness" | "irradiated" => "moodle:irradiated".to_owned(),
-            "temperature" => match temperature_direction(effect.change) {
+        entry
+            .line_icon_ids
+            .insert(line, effect_moodle_icon_id(effect));
+    }
+}
+
+pub(super) fn effect_moodle_icon_id(effect: &Effect) -> String {
+    let field = effect_moodle_field(effect);
+    if let Some(statuses) = field.as_deref().and_then(|field| {
+        crate::game_data::runtime::metadata()
+            .moodles
+            .field_moodles
+            .get(field)
+    }) && let Some(status) = status_for_effect(effect, statuses)
+    {
+        return super::moodle_icon_id(status);
+    }
+
+    let stat = effect.stat.to_ascii_lowercase();
+    let alias = match stat.as_str() {
+        "antagonistamount" | "opiateamount" => "drugoverdose",
+        "opiatetolerance" => "withdrawal",
+        "botheyesgone" => "rippedeyes",
+        "bloodoxygen" => "oxygen",
+        "brainhealth" => "braindamage",
+        "braingrowsickness" => "rnrs",
+        "disinfect" | "dirtyness" => "dirty",
+        "dislocationtimer" => "dislocation",
+        "eyegone" => "rippedeye",
+        "infectionamount" => "infected",
+        "internalbleeding" => "internalBleed",
+        "happiness" => match effect_direction(effect.change) {
+            Some(false) => "miserable",
+            _ => "happy",
+        },
+        "radiationsickness" | "irradiated" => "irradiated",
+        "septicshock" => "sepsis",
+        "sicknessamount" | "vomit" => "sick",
+        "snowamount" => "cold",
+        "stimulantmultiplier" => "stimulated",
+        "usedneuralbooster" => "focused",
+        "usingsleepingbag" | "sleeping" => "asleep",
+        "venomtotal" => "venom",
+        "temperature" => {
+            return match temperature_direction(effect.change) {
                 Some(true) => "moodle:hot".to_owned(),
                 Some(false) => "moodle:cold".to_owned(),
                 None => super::moodle_icon_id(&effect.stat),
-            },
-            _ => super::moodle_icon_id(&effect.stat),
-        };
-        entry.line_icon_ids.insert(line, icon_id);
+            };
+        }
+        _ => &effect.stat,
+    };
+    super::moodle_icon_id(alias)
+}
+
+pub(super) fn effect_moodle_field(effect: &Effect) -> Option<String> {
+    let stat = effect.stat.to_ascii_lowercase();
+    match stat.as_str() {
+        "adrenaline" => Some("Body.curAdrenaline".to_owned()),
+        "antibioticimmunitytime" => Some("Body.immunity".to_owned()),
+        "bloodpressurechangefrommedicine" => Some("Body.bloodPressure".to_owned()),
+        "bleedamount" => Some("Body.totalBleedSpeed".to_owned()),
+        _ => match effect.target {
+            Target::Body => Some(format!("Body.{}", effect.stat)),
+            Target::TreatedLimb | Target::Limb(_) | Target::EachLimb => {
+                Some(format!("Limb.{}", effect.stat))
+            }
+            Target::Component(_) => None,
+        },
+    }
+}
+
+fn status_for_effect<'a>(effect: &Effect, statuses: &'a [String]) -> Option<&'a str> {
+    let stat = effect.stat.to_ascii_lowercase();
+    let preferred = match stat.as_str() {
+        "temperature" => Some(match temperature_direction(effect.change)? {
+            true => "hot",
+            false => "cold",
+        }),
+        "heartrate" => Some(match effect_direction(effect.change) {
+            Some(true) => "tachycardia",
+            Some(false) => "bradycardia",
+            None => "palpitations",
+        }),
+        "bloodpressurechangefrommedicine" => Some(match effect_direction(effect.change) {
+            Some(true) => "hypertension",
+            Some(false) => "hypotension",
+            None => "hypertension",
+        }),
+        "antibioticimmunitytime" => Some(match effect_direction(effect.change) {
+            Some(true) => "highimmunity",
+            Some(false) => "lowimmunity",
+            None => "highimmunity",
+        }),
+        "weightoffset" => Some(match effect_direction(effect.change) {
+            Some(true) => "overweight",
+            Some(false) => "underweight",
+            None => "overweight",
+        }),
+        "happiness" => Some(match effect_direction(effect.change) {
+            Some(true) => "happy",
+            Some(false) => "miserable",
+            None => "happy",
+        }),
+        _ => None,
+    };
+    preferred
+        .and_then(|base| {
+            statuses.iter().find_map(|status| {
+                (status_base(status).eq_ignore_ascii_case(base)).then_some(status.as_str())
+            })
+        })
+        .or_else(|| statuses.first().map(String::as_str))
+}
+
+fn status_base(status: &str) -> &str {
+    status.trim_end_matches(|character: char| character.is_ascii_digit())
+}
+
+fn effect_direction(change: Change) -> Option<bool> {
+    match change {
+        Change::Add(value) if value != 0.0 => Some(value > 0.0),
+        Change::Multiply(value) if value != 1.0 => Some(value > 1.0),
+        _ => None,
     }
 }
 

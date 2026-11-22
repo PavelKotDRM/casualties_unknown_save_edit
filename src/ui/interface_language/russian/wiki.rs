@@ -248,6 +248,7 @@ pub(super) fn translate(source: &str) -> Option<&'static str> {
         "Utilities" => Some("Полезные предметы"),
         "Food" => Some("Еда"),
         "Repair" => Some("Ремонт"),
+        "Required volume" => Some("Необходимый объём"),
         "INT" => Some("ИНТ"),
         "Category" => Some("Категория"),
         "INT required" => Some("Требуется ИНТ"),

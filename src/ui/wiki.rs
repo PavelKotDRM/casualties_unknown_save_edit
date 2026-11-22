@@ -39,6 +39,8 @@ pub struct WikiState {
     cache: WikiCache,
     hint_ending: Option<usize>,
     quality_filter: Option<QualityFilter>,
+    quality_filter_return: Option<QualityFilterReturn>,
+    pending_scroll: Option<PendingScroll>,
     item_sort: ItemSort,
     item_sort_descending: bool,
 }
@@ -66,6 +68,31 @@ struct QualityFilter {
     click_hint: String,
 }
 
+#[derive(Debug, Clone)]
+struct QualityFilterReturn {
+    section: Section,
+    search: String,
+    origin: Option<EntryAnchor>,
+}
+
+/// A wiki card and how far below the top of the visible area its top edge was.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EntryAnchor {
+    id: (usize, usize),
+    offset: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PendingScroll {
+    Top,
+    Entry(EntryAnchor),
+}
+
+struct QualityRequest {
+    filter: QualityFilter,
+    origin: EntryAnchor,
+}
+
 impl QualityFilter {
     fn text(&self, names: Names<'_>) -> String {
         let template = if self.is_liquid {
@@ -89,15 +116,22 @@ impl QualityFilter {
             })
     }
 
+    /// The game scales a liquid's qualities by its volume in millilitres and
+    /// does not apply `ignoredId` to liquids, so any liquid that has the
+    /// quality meets the requirement given enough of it.
     fn matches_liquid(&self, effects: &GameEffects, liquid_id: &str) -> bool {
-        self.is_liquid
-            && self.ignored_id.as_deref() != Some(liquid_id)
-            && effects.liquids.get(liquid_id).is_some_and(|liquid| {
-                liquid
-                    .qualities
-                    .iter()
-                    .any(|(id, amount)| id == &self.id && *amount >= self.amount)
-            })
+        self.is_liquid && self.required_liquid_volume(effects, liquid_id).is_some()
+    }
+
+    fn required_liquid_volume(&self, effects: &GameEffects, liquid_id: &str) -> Option<f32> {
+        effects
+            .liquids
+            .get(liquid_id)?
+            .qualities
+            .iter()
+            .filter(|(id, amount)| id == &self.id && *amount > 0.0)
+            .map(|(_, amount)| self.amount / amount)
+            .reduce(f32::min)
     }
 }
 
@@ -108,8 +142,11 @@ fn moodle_icon_id(id: &str) -> String {
         .trim_end_matches(|character: char| character.is_ascii_digit())
         .to_ascii_lowercase();
     let id = match id.as_str() {
+        "adrenaline" => "fightorflight",
         "deaf" => "hearingloss",
         "fibrillation" => "arrythmia",
+        "incapacitated" => "unconscious",
+        "laststand" => "lastleg",
         "materialloss" => "severematerialloss",
         "prosthesis" => "prosthetic",
         "rippedeyes" => "rippedeye",
@@ -139,7 +176,14 @@ impl WikiState {
         self.cache = WikiCache::default();
     }
 
-    fn show_quality_matches(&mut self, filter: QualityFilter) {
+    fn show_quality_matches(&mut self, filter: QualityFilter, origin: Option<EntryAnchor>) {
+        if self.quality_filter_return.is_none() {
+            self.quality_filter_return = Some(QualityFilterReturn {
+                section: self.section,
+                search: self.search.clone(),
+                origin,
+            });
+        }
         self.section = if filter.is_liquid {
             Section::Liquids
         } else {
@@ -147,12 +191,36 @@ impl WikiState {
         };
         self.search.clear();
         self.quality_filter = Some(filter);
-        self.invalidate();
+        self.pending_scroll = Some(PendingScroll::Top);
+        self.invalidate_quality_sections();
     }
 
     fn clear_quality_filter(&mut self) {
         self.quality_filter = None;
-        self.invalidate();
+        self.quality_filter_return = None;
+        self.invalidate_quality_sections();
+    }
+
+    fn back_from_quality_matches(&mut self) {
+        if let Some(previous) = self.quality_filter_return.take() {
+            self.section = previous.section;
+            self.search = previous.search;
+            self.pending_scroll = Some(
+                previous
+                    .origin
+                    .map_or(PendingScroll::Top, PendingScroll::Entry),
+            );
+        }
+        self.clear_quality_filter();
+    }
+
+    /// Only the item and liquid lists depend on the quality filter; keeping the
+    /// other sections preserves their measured card heights for returning.
+    fn invalidate_quality_sections(&mut self) {
+        self.cache.sections[Section::Items as usize] = None;
+        self.cache.sections[Section::Liquids as usize] = None;
+        self.cache.query = None;
+        self.cache.results.clear();
     }
 }
 
@@ -753,6 +821,10 @@ fn contents(ui: &mut Ui, state: &mut WikiState, sources: &mut Sources) {
             }
             if let Some(filter) = state.quality_filter.clone() {
                 ui.horizontal_wrapped(|ui| {
+                    if ui.button(names.text("Back")).clicked() {
+                        state.back_from_quality_matches();
+                        sources.quality_filter = None;
+                    }
                     ui.label(filter.text(names));
                     if ui.button(names.text("Clear filter")).clicked() {
                         state.clear_quality_filter();
@@ -818,10 +890,14 @@ fn contents(ui: &mut Ui, state: &mut WikiState, sources: &mut Sources) {
                     _ => {}
                 });
             }
-            egui::ScrollArea::vertical()
+            let mut scroll = egui::ScrollArea::vertical()
                 .id_salt("wiki_scroll")
-                .auto_shrink(false)
-                .show(ui, |ui| article(ui, state, sources, &terms));
+                .auto_shrink(false);
+            if state.pending_scroll == Some(PendingScroll::Top) {
+                state.pending_scroll = None;
+                scroll = scroll.vertical_scroll_offset(0.0);
+            }
+            scroll.show(ui, |ui| article(ui, state, sources, &terms));
         });
     });
 }
@@ -874,6 +950,10 @@ fn article(ui: &mut Ui, state: &mut WikiState, sources: &Sources, terms: &[Strin
     }
     let quality_filter = quality_search_filter(&state.search, sources);
     let scoped_section = search_scope(state, quality_filter.as_ref());
+    let scroll_target = match state.pending_scroll.take() {
+        Some(PendingScroll::Entry(anchor)) => Some(anchor),
+        _ => None,
+    };
     let cache = &mut state.cache;
     cache.rendered = 0;
     if (cache.width - ui.available_width()).abs() > 0.5 {
@@ -899,10 +979,11 @@ fn article(ui: &mut Ui, state: &mut WikiState, sources: &Sources, terms: &[Strin
                 terms,
                 sources.crafting_icons,
                 &mut requested_filter,
+                scroll_target,
             );
         }
-        if let Some(filter) = requested_filter {
-            state.show_quality_matches(filter);
+        if let Some(request) = requested_filter {
+            state.show_quality_matches(request.filter, Some(request.origin));
         }
         return;
     }
@@ -969,13 +1050,14 @@ fn article(ui: &mut Ui, state: &mut WikiState, sources: &Sources, terms: &[Strin
                     terms,
                     sources.crafting_icons,
                     &mut requested_filter,
+                    scroll_target,
                 );
             }
         }
         ui.add_space(6.0);
     }
-    if let Some(filter) = requested_filter {
-        state.show_quality_matches(filter);
+    if let Some(request) = requested_filter {
+        state.show_quality_matches(request.filter, Some(request.origin));
     }
 }
 
@@ -985,22 +1067,47 @@ fn virtual_entry(
     entry: &mut Entry,
     terms: &[String],
     icons: Option<&HashMap<String, crate::game_data::crafting::CraftingIcon>>,
-    requested_filter: &mut Option<QualityFilter>,
+    requested: &mut Option<QualityRequest>,
+    scroll_target: Option<EntryAnchor>,
 ) -> usize {
     let height = entry.height.unwrap_or(160.0);
     let rect = egui::Rect::from_min_size(
         ui.next_widget_position(),
         egui::vec2(ui.available_width(), height),
     );
-    if !ui.clip_rect().intersects(rect) {
+    let target = scroll_target.filter(|anchor| anchor.id == id);
+    if target.is_none() && !ui.clip_rect().intersects(rect) {
         ui.add_space(height);
         return 0;
     }
     let start = ui.next_widget_position().y;
+    let mut requested_filter = None;
     ui.push_id(id, |ui| {
-        entry_card(ui, entry, terms, icons, requested_filter)
+        entry_card(ui, entry, terms, icons, &mut requested_filter)
     });
-    entry.height = Some(ui.next_widget_position().y - start);
+    let end = ui.next_widget_position().y;
+    entry.height = Some(end - start);
+    if let Some(anchor) = target {
+        // Put the card back at the same distance from the top of the view.
+        let top = start - anchor.offset;
+        ui.scroll_to_rect_animation(
+            egui::Rect::from_min_max(
+                egui::pos2(rect.left(), top),
+                egui::pos2(rect.right(), top + 1.0),
+            ),
+            Some(egui::Align::TOP),
+            egui::style::ScrollAnimation::none(),
+        );
+    }
+    if let Some(filter) = requested_filter {
+        *requested = Some(QualityRequest {
+            filter,
+            origin: EntryAnchor {
+                id,
+                offset: start - ui.clip_rect().top(),
+            },
+        });
+    }
     1
 }
 
@@ -1416,11 +1523,23 @@ mod tests {
 
         let liquid_filter = QualityFilter {
             is_liquid: true,
-            amount: 2.0,
+            amount: 50.0,
+            ignored_id: Some("acid".into()),
             ..item_filter
         };
         assert!(liquid_filter.matches_liquid(&effects, "acid"));
+        assert_eq!(
+            liquid_filter.required_liquid_volume(&effects, "acid"),
+            Some(25.0)
+        );
         assert!(!liquid_filter.matches_item(&effects, "scissors"));
+        assert!(
+            !QualityFilter {
+                id: "Foliage".into(),
+                ..liquid_filter
+            }
+            .matches_liquid(&effects, "acid")
+        );
     }
 
     #[test]
@@ -1570,9 +1689,17 @@ mod tests {
             ..sources.quality_filter.take().unwrap()
         });
         let liquids = entries(Section::Liquids, &sources);
-        assert_eq!(liquids.len(), 1);
-        assert_eq!(liquids[0].subtitle, "water");
-        assert!(liquids[0].matches("Matching liquid crafting quality: Foliage ≥1.5"));
+        assert_eq!(liquids.len(), 2);
+        let water = liquids
+            .iter()
+            .find(|entry| entry.subtitle == "water")
+            .unwrap();
+        assert!(water.matches("Matching liquid crafting quality: Foliage ≥1.5"));
+        assert!(
+            water
+                .facts
+                .contains(&("Required volume".into(), "0.75 ml".into()))
+        );
     }
 
     #[test]
@@ -1729,7 +1856,7 @@ mod tests {
     }
 
     #[test]
-    fn quality_filter_navigation_selects_the_right_section_and_clears_search() {
+    fn quality_filter_navigation_can_return_to_the_previous_section_and_search() {
         let filter = QualityFilter {
             id: "Cutting".into(),
             label: "Cutting".into(),
@@ -1739,18 +1866,27 @@ mod tests {
             click_hint: String::new(),
         };
         let mut state = WikiState {
+            section: Section::Crafting,
             search: "acid".into(),
             ..Default::default()
         };
         state.cache.query = Some(vec!["acid".into()]);
+        let origin = EntryAnchor {
+            id: (Section::Crafting as usize, 7),
+            offset: 42.0,
+        };
 
-        state.show_quality_matches(filter.clone());
+        state.show_quality_matches(filter.clone(), Some(origin));
         assert_eq!(state.section, Section::Liquids);
         assert!(state.search.is_empty());
         assert_eq!(state.quality_filter, Some(filter));
+        assert_eq!(state.pending_scroll, Some(PendingScroll::Top));
         assert!(state.cache.query.is_none());
 
-        state.clear_quality_filter();
+        state.back_from_quality_matches();
+        assert_eq!(state.section, Section::Crafting);
+        assert_eq!(state.search, "acid");
+        assert_eq!(state.pending_scroll, Some(PendingScroll::Entry(origin)));
         assert!(state.quality_filter.is_none());
         assert!(state.cache.query.is_none());
     }
@@ -2246,6 +2382,72 @@ mod tests {
     }
 
     #[test]
+    fn returning_from_quality_matches_restores_the_originating_card_position() {
+        let ctx = egui::Context::default();
+        let names = Names {
+            locale: None,
+            interface_language: InterfaceLanguage::English,
+        };
+        let stats = HashMap::new();
+        let effects = GameEffects::default();
+        let progress = GameProgress::from_wins(Vec::new());
+        let sources = sources_for(names, &stats, &effects, &progress);
+        let mut state = WikiState {
+            section: Section::Crafting,
+            ..Default::default()
+        };
+        state.cache.progress = Some(progress.clone());
+        state.cache.spoilers = Some(sources.spoilers.clone());
+        state.cache.hints = Some(sources.hints.clone());
+        state.cache.sections[Section::Crafting as usize] = Some(
+            (0..1_000)
+                .map(|index| {
+                    let mut entry = Entry::new(format!("Recipe {index}"));
+                    entry.text = Some("Long description. ".repeat(20));
+                    entry
+                })
+                .collect(),
+        );
+        let target = 500;
+        state.pending_scroll = Some(PendingScroll::Entry(EntryAnchor {
+            id: (Section::Crafting as usize, target),
+            offset: 30.0,
+        }));
+        let mut offset = 0.0;
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                let scroll = egui::ScrollArea::vertical().show(ui, |ui| {
+                    let content_top = ui.max_rect().top();
+                    article(ui, &mut state, &sources, &[]);
+                    content_top
+                });
+                offset = scroll.inner_rect.top() - scroll.inner;
+            });
+            output.textures_delta.clear();
+        }
+        let above: f32 = state.cache.sections[Section::Crafting as usize]
+            .as_ref()
+            .unwrap()[..target]
+            .iter()
+            .map(|entry| entry.height.unwrap_or(160.0))
+            .sum();
+        // The section heading sits above the cards; the card itself is 30 px below the top.
+        let card_offset = above - 30.0;
+        assert!(
+            (card_offset..card_offset + 120.0).contains(&offset),
+            "scroll offset {offset}, card starts at {above}"
+        );
+        assert!(state.pending_scroll.is_none());
+    }
+
+    #[test]
     fn unavailable_game_keeps_wiki_empty_and_progress_unknown() {
         let _metadata = scoped_for_test(Metadata::default());
         let ctx = egui::Context::default();
@@ -2525,6 +2727,126 @@ mod tests {
             assert!(actual_saturation >= native_saturation);
             assert_eq!(text.galley.job.sections[0].format.color, colour);
         }
+    }
+
+    #[test]
+    fn every_installed_quality_ingredient_has_matching_items_or_liquids() {
+        let Some(game_dir) = std::env::var_os("CU_GAME_DIR") else {
+            eprintln!("skipped: CU_GAME_DIR is not set");
+            return;
+        };
+        let data = crate::game_data::load_game_data(std::path::Path::new(&game_dir)).unwrap();
+        let mut empty = Vec::new();
+        for recipe in &data.crafting {
+            for ingredient in &recipe.ingredients {
+                let Some(id) = &ingredient.quality_id else {
+                    continue;
+                };
+                let filter = QualityFilter {
+                    id: id.clone(),
+                    label: id.clone(),
+                    amount: ingredient.quality_amount,
+                    is_liquid: ingredient.is_liquid,
+                    ignored_id: ingredient.ignored_id.clone(),
+                    click_hint: String::new(),
+                };
+                let found = if ingredient.is_liquid {
+                    data.effects
+                        .liquids
+                        .keys()
+                        .any(|liquid| filter.matches_liquid(&data.effects, liquid))
+                } else {
+                    data.effects
+                        .items
+                        .keys()
+                        .any(|item| filter.matches_item(&data.effects, item))
+                };
+                if !found {
+                    empty.push((recipe.result_id.clone(), id.clone(), ingredient.is_liquid));
+                }
+            }
+        }
+        assert!(
+            empty.is_empty(),
+            "Quality ingredients without matches: {empty:?}"
+        );
+    }
+
+    #[test]
+    fn installed_statuses_and_status_changing_effects_have_game_sprites() {
+        let Some(game_dir) = std::env::var_os("CU_GAME_DIR") else {
+            eprintln!("skipped: CU_GAME_DIR is not set");
+            return;
+        };
+        let data = crate::game_data::load_game_data(std::path::Path::new(&game_dir)).unwrap();
+        let _metadata = scoped_for_test(data.metadata.clone());
+        let missing_statuses: Vec<_> = data
+            .metadata
+            .moodles
+            .colours
+            .keys()
+            .filter_map(|status| {
+                let icon = moodle_icon_id(status);
+                (!data.crafting_icons.contains_key(&icon)).then_some((status, icon))
+            })
+            .collect();
+        assert!(
+            missing_statuses.is_empty(),
+            "Statuses without icons: {missing_statuses:?}"
+        );
+
+        let explicit_status_effects = [
+            "adrenaline",
+            "antibioticimmunitytime",
+            "antagonistamount",
+            "bleedamount",
+            "bloodpressurechangefrommedicine",
+            "bothEyesGone",
+            "disinfect",
+            "dislocationtimer",
+            "eyegone",
+            "infectionamount",
+            "internalbleeding",
+            "opiateamount",
+            "opiatetolerance",
+            "sicknessamount",
+            "snowamount",
+            "stimulantmultiplier",
+            "usedneuralbooster",
+            "usingSleepingBag",
+            "venomtotal",
+            "vomit",
+        ];
+        let effects = data
+            .effects
+            .items
+            .values()
+            .flat_map(|profile| profile.uses.iter().flat_map(|item_use| &item_use.effects))
+            .chain(
+                data.effects
+                    .liquids
+                    .values()
+                    .flat_map(|liquid| liquid.drink.iter().chain(&liquid.inject)),
+            );
+        let missing_effects: Vec<_> = effects
+            .filter_map(|effect| {
+                let field = effects::effect_moodle_field(effect);
+                let has_game_status = field
+                    .as_deref()
+                    .is_some_and(|field| data.metadata.moodles.field_moodles.contains_key(field));
+                (has_game_status
+                    || explicit_status_effects
+                        .iter()
+                        .any(|stat| effect.stat.eq_ignore_ascii_case(stat)))
+                .then(|| effects::effect_moodle_icon_id(effect))
+                .filter(|icon| !data.crafting_icons.contains_key(icon))
+                .map(|icon| (effect.stat.as_str(), icon))
+            })
+            .collect();
+        assert!(
+            missing_effects.is_empty(),
+            "Status-changing effects without icons: {missing_effects:?}"
+        );
     }
 
     #[test]

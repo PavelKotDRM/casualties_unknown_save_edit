@@ -93,6 +93,131 @@ fn is_item_sprite_source(container: Option<&str>) -> bool {
     })
 }
 
+fn item_prefab_sprites(
+    studio: &Studio,
+    wanted: &HashSet<String>,
+    errors: &mut Vec<String>,
+) -> HashMap<(usize, usize), Vec<String>> {
+    use unity_rs_core::scene::{
+        ObjectReference, SceneReadLimits, read_game_object, resolve_object_reference,
+    };
+
+    let mut sprites = HashMap::<(usize, usize), Vec<String>>::new();
+    let prefab_ids = match resource_item_ids(studio) {
+        Ok(prefab_ids) => prefab_ids,
+        Err(error) => {
+            errors.push(format!("Cannot map item prefab sprites: {error}"));
+            return sprites;
+        }
+    };
+    let mut assigned = HashSet::new();
+    for ((file_index, path_id), item_id) in prefab_ids {
+        if !wanted.contains(&item_id) {
+            continue;
+        }
+        let root = match resolve_object_reference(
+            studio.collection(),
+            file_index,
+            ObjectReference {
+                file_id: 0,
+                path_id,
+            },
+        ) {
+            Ok(Some(root)) if root.object.class_id == 1 => root,
+            Ok(Some(root)) => {
+                errors.push(format!(
+                    "{item_id}: item prefab root has class ID {}, expected GameObject",
+                    root.object.class_id
+                ));
+                continue;
+            }
+            Ok(None) => continue,
+            Err(error) => {
+                errors.push(format!("{item_id}: cannot resolve item prefab: {error}"));
+                continue;
+            }
+        };
+        let game_object =
+            match read_game_object(root.file, root.object_index, SceneReadLimits::default()) {
+                Ok(game_object) => game_object,
+                Err(error) => {
+                    errors.push(format!("{item_id}: cannot read item prefab: {error}"));
+                    continue;
+                }
+            };
+        for component in game_object.components {
+            let renderer = match resolve_object_reference(
+                studio.collection(),
+                root.file_index,
+                component.component,
+            ) {
+                Ok(Some(renderer)) if renderer.object.class_id == 212 => renderer,
+                Ok(_) => continue,
+                Err(error) => {
+                    errors.push(format!(
+                        "{item_id}: cannot resolve item sprite renderer: {error}"
+                    ));
+                    continue;
+                }
+            };
+            let Some(renderer) = studio.object_by_index(renderer.file_index, renderer.object_index)
+            else {
+                errors.push(format!("{item_id}: missing item sprite renderer"));
+                continue;
+            };
+            let bytes = match renderer.read_raw(1024 * 1024) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    errors.push(format!(
+                        "{item_id}: cannot read item sprite renderer: {error}"
+                    ));
+                    continue;
+                }
+            };
+            // SpriteRenderer.m_Sprite is at this offset in the game's Unity 2022.3 prefabs.
+            let mut cursor = Cursor {
+                bytes: &bytes,
+                offset: 132,
+            };
+            let Some((file_id, path_id)) = cursor.reference() else {
+                errors.push(format!("{item_id}: truncated item sprite renderer"));
+                continue;
+            };
+            let sprite = match resolve_object_reference(
+                studio.collection(),
+                renderer.file_index(),
+                ObjectReference { file_id, path_id },
+            ) {
+                Ok(Some(sprite)) if sprite.object.class_id == 213 => sprite,
+                Ok(Some(sprite)) => {
+                    errors.push(format!(
+                        "{item_id}: item sprite has class ID {}, expected Sprite",
+                        sprite.object.class_id
+                    ));
+                    continue;
+                }
+                Ok(None) => continue,
+                Err(error) => {
+                    errors.push(format!("{item_id}: cannot resolve item sprite: {error}"));
+                    continue;
+                }
+            };
+            let Some(sprite) = studio.object_by_index(sprite.file_index, sprite.object_index)
+            else {
+                errors.push(format!("{item_id}: missing item sprite"));
+                continue;
+            };
+            if is_item_sprite_source(sprite.container()) && assigned.insert(item_id.clone()) {
+                sprites
+                    .entry((sprite.file_index(), sprite.object_index()))
+                    .or_default()
+                    .push(item_id.clone());
+            }
+        }
+    }
+    sprites
+}
+
 pub(super) fn crafting_icons(
     data_dir: &Path,
     recipes: &[super::crafting::CraftingRecipe],
@@ -123,26 +248,29 @@ pub(super) fn crafting_icons(
     };
     let mut icons = HashMap::new();
     let mut errors = Vec::new();
+    let item_sprite_aliases = item_prefab_sprites(&studio, &wanted, &mut errors);
     for sprite in studio.objects().filter(|object| object.class_id() == 213) {
-        let Some(name) = sprite.name() else {
-            continue;
-        };
-        let moodle_icon = is_moodle_sprite(sprite.container());
-        if !moodle_icon && (!wanted.contains(name) || !is_item_sprite_source(sprite.container())) {
+        let name = sprite.name();
+        let moodle_icon = name.is_some() && is_moodle_sprite(sprite.container());
+        let aliases = item_sprite_aliases.get(&(sprite.file_index(), sprite.object_index()));
+        let direct_item = name
+            .is_some_and(|name| wanted.contains(name) && is_item_sprite_source(sprite.container()));
+        if !moodle_icon && !direct_item && aliases.is_none() {
             continue;
         }
         let key = if moodle_icon {
-            format!("moodle:{}", name.to_ascii_lowercase())
+            format!("moodle:{}", name.unwrap_or_default().to_ascii_lowercase())
         } else {
-            name.to_owned()
+            name.unwrap_or_default().to_owned()
         };
-        if icons.contains_key(&key) {
+        if (moodle_icon || direct_item) && icons.contains_key(&key) && aliases.is_none() {
             continue;
         }
         let image = match sprite.decode_sprite(Default::default(), Default::default()) {
             Ok(image) => image,
             Err(error) => {
-                errors.push(format!("{key}: {error}"));
+                let label = aliases.map_or_else(|| key.clone(), |aliases| aliases.join(", "));
+                errors.push(format!("{label}: {error}"));
                 continue;
             }
         };
@@ -160,14 +288,19 @@ pub(super) fn crafting_icons(
             errors.push(format!("{key}: invalid sprite dimensions"));
             continue;
         }
-        icons.insert(
-            key,
-            super::crafting::CraftingIcon {
-                width: image.width,
-                height: image.height,
-                rgba: image.pixels,
-            },
-        );
+        let icon = super::crafting::CraftingIcon {
+            width: image.width,
+            height: image.height,
+            rgba: image.pixels,
+        };
+        if moodle_icon || direct_item {
+            icons.entry(key).or_insert_with(|| icon.clone());
+        }
+        if let Some(aliases) = aliases {
+            for alias in aliases {
+                icons.insert(alias.clone(), icon.clone());
+            }
+        }
     }
 
     let error = (!errors.is_empty()).then(|| {
@@ -1460,17 +1593,34 @@ mod tests {
         };
         let data_dir = Path::new(&game_dir).join("CasualtiesUnknown_Data");
         let studio = Studio::open(&data_dir).unwrap();
-        let (icons, error) = crafting_icons(
-            &data_dir,
-            &[],
-            ["bloodbag".to_owned(), "autopump".to_owned()],
-        );
+        let assembly = CilObject::from_path_with_validation(
+            data_dir.join("Managed").join("Assembly-CSharp.dll"),
+            dotscope::ValidationConfig::minimal(),
+        )
+        .unwrap();
+        let mut item_ids: Vec<_> = crate::catalog::ITEMS
+            .iter()
+            .map(|item| item.id.to_owned())
+            .chain(super::super::il::items(&assembly).unwrap().into_keys())
+            .collect();
+        item_ids.sort();
+        item_ids.dedup();
+        let recipes = super::super::crafting::parse(&assembly).unwrap();
+        let (icons, error) = crafting_icons(&data_dir, &recipes, item_ids.iter().cloned());
         assert!(error.is_none(), "icon decode errors: {error:?}");
+        let missing: Vec<_> = item_ids
+            .iter()
+            .filter(|id| !icons.contains_key(id.as_str()))
+            .collect();
+        assert!(missing.is_empty(), "Missing game item icons: {missing:?}");
         assert!(icons.contains_key("moodle:pain"));
         assert!(icons.contains_key("moodle:autopump"));
         assert!(icons.contains_key("moodle:hot"));
         assert!(icons.contains_key("moodle:cold"));
         assert!(icons.contains_key("moodle:irradiated"));
+        assert_eq!(icons["bloodbaghuman"].rgba, icons["bloodbag"].rgba);
+        assert!(icons.contains_key("aichip"));
+        assert!(icons.contains_key("foliage"));
 
         let drawing = studio
             .objects()
