@@ -1,6 +1,7 @@
 # Casualties Unknown Save Editor
 
 [![CI](https://github.com/PavelKotDRM/casualties_unknown_save_edit/actions/workflows/ci.yml/badge.svg)](https://github.com/PavelKotDRM/casualties_unknown_save_edit/actions/workflows/ci.yml)
+[![VirusTotal reports](https://img.shields.io/badge/VirusTotal-release%20reports-blue)](https://github.com/PavelKotDRM/casualties_unknown_save_edit/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Steam](https://img.shields.io/badge/Steam-Casualties%3A%20Unknown-1b2838?logo=steam)](https://store.steampowered.com/app/4576490/)
 
@@ -171,7 +172,10 @@ only when the document has unsaved changes.
 
 Ready-made builds for Windows, Linux and macOS are attached to each
 [release](https://github.com/PavelKotDRM/casualties_unknown_save_edit/releases).
-Every CI run also uploads build artifacts.
+The release notes include VirusTotal analysis links for the published
+executables. The reports may still be processing after submission, so check the
+linked analysis rather than treating submission as a clean verdict. Every CI run
+also uploads build artifacts.
 
 ### Build from source
 
