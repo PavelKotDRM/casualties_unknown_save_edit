@@ -3,7 +3,21 @@ name: CI
 on:
   push:
     branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+      - src/**
+      - tests/**
+      - .github/workflows/ci.yml
   pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+      - src/**
+      - tests/**
+      - .github/workflows/ci.yml
   workflow_dispatch:
 
 permissions:
